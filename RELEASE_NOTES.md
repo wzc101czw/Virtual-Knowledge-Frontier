@@ -1,3 +1,12 @@
+# VKF Storage Core v0.1.2 · Windows UTF-8 test hotfix
+
+- Fixed Python 3.12 on Chinese Windows: every test Markdown/SQL `Path.read_text()` and `Path.write_text()` call explicitly specifies `encoding="utf-8"`.
+- Added encoding portability tests for Chinese, emoji, and revisioned Obsidian bridge pull.
+- No SQLite schema change, no behavior change to production code. SQLite databases from v0.1.1 remain compatible.
+- Existing v0.1.1 test-only workaround: `python -X utf8 -m unittest discover -s tests -v`.
+
+---
+
 # VKF Storage Core v0.1.1 · 小版本更新
 
 ## New

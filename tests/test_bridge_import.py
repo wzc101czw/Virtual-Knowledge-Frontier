@@ -133,7 +133,7 @@ not a real role
         first = import_history(self.store, file)
         self.assertEqual(first["created_conversations"], 1)
         file.write_text(json.dumps({"id": "ext-1", "source": "claude", "title": "T",
-                    "messages": [{"role": "user", "content": "changed"}]}))
+                    "messages": [{"role": "user", "content": "changed"}]}), encoding="utf-8")
         second = import_history(self.store, file)
         self.assertEqual(second["created_conversations"], 0)
         self.assertEqual(len(second["file_results"][0]["conflicts"]), 1)
@@ -223,7 +223,7 @@ not a real role
         self.assertIn("aliases: [", text)
         self.assertIn("vkf_id:", text)
         self.assertIn("`raises` → [[VKF/Questions/", text)
-        index = (vault / "VKF" / "00 - Start Here.md").read_text()
+        index = (vault / "VKF" / "00 - Start Here.md").read_text(encoding="utf-8")
         self.assertIn("## Pending Candidate Inbox", index)
         self.assertIn("## Questions", index)
         self.assertEqual(export_vault(self.store, vault)["exported"], 0)
@@ -234,7 +234,7 @@ not a real role
         vault = self.root / "vault"
         export_vault(self.store, vault)
         note = next((vault / "VKF" / "Ideas").glob("*.md"))
-        note.write_text(note.read_text().replace("# Old\n\nFirst insight", "# Revised\n\nA revised idea"))
+        note.write_text(note.read_text(encoding="utf-8").replace("# Old\n\nFirst insight", "# Revised\n\nA revised idea"), encoding="utf-8")
         preview = pull_vault(self.store, vault, apply=False)
         self.assertEqual(len(preview["ready"]), 1)
         self.assertEqual(self.store.get_object(obj["id"])["revision"], 1)
@@ -243,7 +243,7 @@ not a real role
         after = self.store.get_object(obj["id"])
         self.assertEqual((after["title"], after["revision"]), ("Revised", 2))
         self.assertEqual(after["body"], "A revised idea")
-        self.assertIn("vkf_revision: 2", note.read_text())
+        self.assertIn("vkf_revision: 2", note.read_text(encoding="utf-8"))
         self.assertEqual(len(self.store.object_history(obj["id"])), 2)
         self.assertTrue(self.store.doctor()["ok"])
 
@@ -252,7 +252,7 @@ not a real role
         vault = self.root / "vault"
         export_vault(self.store, vault)
         note = next((vault / "VKF" / "Knowledge").glob("*.md"))
-        note.write_text(note.read_text().replace("vkf_id:", "vkf_identity:"))
+        note.write_text(note.read_text(encoding="utf-8").replace("vkf_id:", "vkf_identity:"), encoding="utf-8")
         result = pull_vault(self.store, vault, apply=True)
         self.assertEqual(len(result["conflicts"]), 1)
         self.assertEqual(self.store.get_object(obj["id"])["revision"], 1)
@@ -261,7 +261,7 @@ not a real role
         second = self.root / "other"
         export_vault(self.store, second)
         note = next((second / "VKF" / "Knowledge").glob("*.md"))
-        note.write_text(note.read_text().replace("# Cache", "# Changed in editor"))
+        note.write_text(note.read_text(encoding="utf-8").replace("# Cache", "# Changed in editor"), encoding="utf-8")
         self.store.update_object(obj["id"], body="updated in DB", reason="outside writer")
         result = pull_vault(self.store, second, apply=True)
         self.assertEqual(len(result["conflicts"]), 1)
@@ -272,13 +272,13 @@ not a real role
         vault = self.root / "vault"
         export_vault(self.store, vault)
         note = next((vault / "VKF" / "Knowledge").glob("*.md"))
-        note.write_text(note.read_text().replace("暂无正式关系", "manually modified relation"))
+        note.write_text(note.read_text(encoding="utf-8").replace("暂无正式关系", "manually modified relation"), encoding="utf-8")
         self.assertEqual(len(pull_vault(self.store, vault)["conflicts"]), 1)
         index = vault / "VKF" / "00 - Start Here.md"
-        index.write_text(index.read_text() + "\nMy private annotation\n")
+        index.write_text(index.read_text(encoding="utf-8") + "\nMy private annotation\n", encoding="utf-8")
         result = export_vault(self.store, vault)
         self.assertTrue(any("Start Here" in x["file"] for x in result["read_only"]["warnings"]))
-        self.assertIn("My private annotation", index.read_text())
+        self.assertIn("My private annotation", index.read_text(encoding="utf-8"))
 
     def test_bridge_filenames_are_sanitized_and_no_vault_file_overwrite(self):
         obj = self.store.create_object("idea", "unsafe/../path: name", "text")
@@ -306,7 +306,7 @@ not a real role
         self.assertEqual(row[0], "2024-01-02T03:04:05Z")
         vault = self.root / "Vault"
         export_vault(self.store, vault)
-        text = next((vault / "VKF" / "Conversations").glob("*.md")).read_text()
+        text = next((vault / "VKF" / "Conversations").glob("*.md")).read_text(encoding="utf-8")
         self.assertIn("(2024-01-02T03:04:05Z)", text)
         self.assertIn("2024-01-02T", text)
 
@@ -316,13 +316,13 @@ not a real role
         export_vault(self.store, vault)
         base = vault / "VKF" / "Open Questions.base"
         self.assertTrue(base.exists())
-        self.assertIn("vkf_question_state", base.read_text())
+        self.assertIn("vkf_question_state", base.read_text(encoding="utf-8"))
         qnote = next((vault / "VKF" / "Questions").glob("*.md"))
-        self.assertIn('vkf_question_state: "open"', qnote.read_text())
-        base.write_text(base.read_text() + "# User addition\n")
+        self.assertIn('vkf_question_state: "open"', qnote.read_text(encoding="utf-8"))
+        base.write_text(base.read_text(encoding="utf-8") + "# User addition\n", encoding="utf-8")
         result = export_vault(self.store, vault)
         self.assertTrue(any("Open Questions.base" in x["file"] for x in result["read_only"]["warnings"]))
-        self.assertIn("User addition", base.read_text())
+        self.assertIn("User addition", base.read_text(encoding="utf-8"))
 
     def test_deleted_note_requires_explicit_restore_missing(self):
         a = self.store.create_object("knowledge", "Deleting test", "first")
@@ -335,12 +335,12 @@ not a real role
         self.assertFalse(note.exists())
         restored = export_vault(self.store, vault, restore_missing=True)
         self.assertEqual(restored["exported"], 1)
-        self.assertIn("Deleting test", note.read_text())
+        self.assertIn("Deleting test", note.read_text(encoding="utf-8"))
 
     def test_upgrade_from_previous_v2_creates_backup_and_retains_content(self):
         p = self.root / "v2.db"
-        sql1 = (ROOT / "vkf_storage" / "migrations" / "001_initial.sql").read_text()
-        sql2 = (ROOT / "vkf_storage" / "migrations" / "002_guardrails.sql").read_text()
+        sql1 = (ROOT / "vkf_storage" / "migrations" / "001_initial.sql").read_text(encoding="utf-8")
+        sql2 = (ROOT / "vkf_storage" / "migrations" / "002_guardrails.sql").read_text(encoding="utf-8")
         with closing(sqlite3.connect(p)) as db:
             db.executescript(sql1)
             db.executescript(sql2)

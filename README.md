@@ -1,10 +1,17 @@
-# VKF Storage Core v0.1.1
+# VKF Storage Core v0.1.2
 
 **SQLite Cognitive Core + Obsidian Bridge + `.json` / `.md` Conversation Import**
 
 这是 VKF（Virtual Knowledge Frontier）的一个可直接测试的小版本：保留 v0.1.0 的 SQLite 认知对象、语义关系、状态机、审计和事务；增加本地 Obsidian Markdown 工作空间以及多来源聊天导入、自动候选提炼。
 
 **设计原则：SQLite 是已确认知识和认知状态的权威记录；Obsidian 是人可以直接浏览和编辑的 Markdown 视图。** 原始聊天与 AI/规则提取的候选分离；候选需要人工确认，绝不会在导入时自动升级为用户已掌握的知识。
+
+## Windows GBK 编码兼容提示 (v0.1.2)
+
+本修复专门针对 Windows 中文系统下运行 `unittest` 时出现的
+`UnicodeDecodeError: 'gbk' codec can't decode ...`：测试中的
+Markdown/SQL 文件读取和写入都显式指定 UTF-8。生产代码此前已经使用 UTF-8。
+如仍使用旧版，可临时运行 `python -X utf8 -m unittest discover -s tests -v`。
 
 ## 1. 环境
 
