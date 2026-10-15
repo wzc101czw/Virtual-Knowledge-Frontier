@@ -31,6 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     sub.add_parser("init", help="create or upgrade the database, without deleting data")
+    probe = sub.add_parser("model-probe", help="safe small API compatibility check (sends test text, may be billed)")
+    probe.add_argument("--model")
+    probe.add_argument("--api-base")
+    probe.add_argument("--timeout", type=int)
+    probe.add_argument("--max-tokens", type=int, default=2000)
     cf = sub.add_parser("config", help="persist vault and model settings per database (no API secrets)")
     cfsub = cf.add_subparsers(dest="action",required=True)
     cfsub.add_parser("show")
@@ -221,6 +226,16 @@ def execute(args: argparse.Namespace):
     api_base=lambda: (getattr(args,'api_base',None) or settings['api_base'])
     timeout=lambda: (getattr(args,'timeout',None) or settings['timeout'])
     vault=lambda: (getattr(args,'vault',None) or settings['vault'])
+    if args.command == 'model-probe':
+        from .importers import request_model_json
+        if not model():
+            raise InvalidInput('configure a model first: config set model MODEL_ID')
+        result = request_model_json('Reply with a JSON object only; keys: ok and probe.',
+            'Return exactly this JSON object: {"ok":true,"probe":"vkf"}',
+            model(), api_base(), timeout(), max_tokens=args.max_tokens)
+        return {'ok': result.get('ok') is True, 'model': model(),
+                'response_keys': sorted(result.keys()),
+                'note': 'Probe sends a small test prompt; no private VKF knowledge was sent.'}
     with Storage(args.db) as st:
         cmd = args.command
         if cmd == "import-history":

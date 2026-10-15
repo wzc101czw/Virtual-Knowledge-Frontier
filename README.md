@@ -173,3 +173,38 @@ python -m vkf_storage --db $DB bridge pull --apply
 ## 发布来源
 
 本项目从 v0.1.2 Storage Core 继续演化：保留原本的 SQLite 审核、事务和 Obsidian Bridge，并添加 schema v4、`settings.py`、`consolidation.py`、`coverage.py`、`evaluation.py`、`obsidian_reviews.py` 和相应的测试。
+
+
+## v0.2.1: model API diagnostics (Windows PowerShell)
+
+The original v0.2.0 obscured three distinct errors (empty HTTP body, empty
+`message.content`, and malformed model JSON). The gateway now reports the stage,
+`finish_reason`, response format, output usage and sanitized request identifier.
+Neither full replies nor private prompts are included in exception messages.
+
+Before rerunning a full history pipeline, check the configured API with a tiny
+synthetic request (this calls your provider and might be billed):
+
+```powershell
+python -m vkf_storage --db $DB config show
+python -m vkf_storage --db $DB model-probe
+```
+
+The following **optional**, provider-specific environment variables affect only
+the current terminal and are not written to a file:
+
+```powershell
+$env:VKF_CHAT_TOKEN_FIELD = "max_completion_tokens" # default: max_tokens
+$env:VKF_CHAT_MAX_OUTPUT_TOKENS = "4096"       # default: extractor 2300, comparison 500
+$env:VKF_CHAT_OMIT_TEMPERATURE = "1"           # default sends temperature: 0
+$env:VKF_CHAT_JSON_MODE = "json_object"        # default: none
+python -m vkf_storage --db $DB model-probe
+```
+
+**Only enable knobs supported by your API provider.** In particular, the
+OpenAI-compatible Chat Completions endpoint is required; Responses-only or
+streaming/SSE-only API endpoints are not supported by this version. Increase
+token budget only if needed; usage and costs may rise. Never paste your API key
+or unredacted private conversations into bug reports. To diagnose a failure,
+share the command (without key), model ID, the API base hostname (if public),
+`finish_reason`, response shape, HTTP status, and token counts.

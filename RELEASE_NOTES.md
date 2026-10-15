@@ -1,3 +1,10 @@
+## v0.2.1 — Model API diagnostic hotfix
+
+- Distinguishes transport, HTTP body, API schema, and model output JSON errors.
+- Includes finish_reason, token usage, limited safe metadata; does not log raw completions.
+- Adds small `model-probe` command and optional compatible request settings.
+- No SQLite migration or Vault changes.
+
 # v0.2.0 — Cognitive Consolidation
 
 - Schema v4 迁移，自动备份已有 schema v3；新增无损分块溯源、Topic、Review、Candidate Attribution 与 Canonical Equivalence 表。

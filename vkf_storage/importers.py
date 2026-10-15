@@ -563,7 +563,7 @@ Return strict JSON: {"candidates":[{"kind":"knowledge|idea|understanding|questio
 Only enduring, precise and reusable concepts, hypotheses, user observations,
 open questions, or explanations of mechanisms. Exclude file deliveries, PDF
 creation logs, plans without reusable insight, greetings, recaps, and generic
-summaries. Return [] when there is no lasting cognitive value.
+summaries. Return {"candidates":[]} when there is no lasting cognitive value.
 An assistant's explanation is NOT proof the user understands or endorses it.
 If suggesting 'understanding', note that this is provisional and requires
 user teach-back, otherwise choose 'idea'. Do not invent facts.
@@ -574,37 +574,150 @@ The global consolidation step will compare against other conversations later.
 
 def request_model_json(system: str, text: str, model: str, api_base: str, timeout: int,
                        *, max_tokens: int = 2300) -> dict[str, Any]:
-    """OpenAI-compatible chat completions. Credentials ONLY from VKF_API_KEY."""
+    """Call a compatible Chat Completions endpoint and diagnose each failure stage.
+
+    Privacy: never include the prompt, model output, bearer token, or raw HTTP body
+    in error strings, persisted logs, or a CLI diagnostic result.
+
+    Optional compatibility knobs, intentionally opt-in:
+    VKF_CHAT_TOKEN_FIELD=max_completion_tokens
+    VKF_CHAT_MAX_OUTPUT_TOKENS=4096
+    VKF_CHAT_OMIT_TEMPERATURE=1
+    VKF_CHAT_JSON_MODE=json_object
+    """
     from urllib.parse import urlsplit
-    url=api_base.rstrip('/')
-    parsed=urlsplit(url)
-    if not (parsed.scheme=='https' or (parsed.scheme=='http' and parsed.hostname in {'localhost','127.0.0.1'})):
+
+    url = api_base.rstrip('/')
+    parsed = urlsplit(url)
+    if not (parsed.scheme == 'https' or
+            (parsed.scheme == 'http' and parsed.hostname in {'localhost', '127.0.0.1'})):
         raise InvalidInput('API base must be HTTPS or local HTTP (localhost/127.0.0.1)')
     if not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise InvalidInput('unsafe API base URL')
+    if not model or not model.strip():
+        raise InvalidInput('model ID is required')
     key = os.environ.get('VKF_API_KEY', '')
-    if not key and parsed.scheme!='http':
+    if not key and parsed.scheme != 'http':
         raise InvalidInput('VKF_API_KEY is required for remote API calls')
-    payload=json.dumps({'model':model,'messages':[{'role':'system','content':system},
-        {'role':'user','content':text}], 'temperature':0,'max_tokens':max_tokens},
-        ensure_ascii=False).encode('utf-8')
-    req=Request(url+'/chat/completions',payload,headers={
-        'Content-Type':'application/json','Authorization':'Bearer '+(key or 'local')},method='POST')
+
+    token_field = os.environ.get('VKF_CHAT_TOKEN_FIELD', 'max_tokens')
+    if token_field not in {'max_tokens', 'max_completion_tokens'}:
+        raise InvalidInput('VKF_CHAT_TOKEN_FIELD must be max_tokens or max_completion_tokens')
+    budget_setting = os.environ.get('VKF_CHAT_MAX_OUTPUT_TOKENS', '')
+    if budget_setting:
+        try:
+            max_tokens = int(budget_setting)
+        except ValueError as exc:
+            raise InvalidInput('VKF_CHAT_MAX_OUTPUT_TOKENS must be an integer') from exc
+    if not isinstance(max_tokens, int) or not 64 <= max_tokens <= 65536:
+        raise InvalidInput('output token budget must be between 64 and 65536')
+    omit_temperature = os.environ.get('VKF_CHAT_OMIT_TEMPERATURE', '')
+    if omit_temperature not in {'', '0', '1'}:
+        raise InvalidInput('VKF_CHAT_OMIT_TEMPERATURE must be 0 or 1')
+    json_mode = os.environ.get('VKF_CHAT_JSON_MODE', 'none')
+    if json_mode not in {'none', 'json_object'}:
+        raise InvalidInput('VKF_CHAT_JSON_MODE must be none or json_object')
+
+    request_data: dict[str, Any] = {
+        'model': model,
+        'messages': [{'role': 'system', 'content': system},
+                     {'role': 'user', 'content': text}],
+        token_field: max_tokens,
+    }
+    if omit_temperature != '1':
+        request_data['temperature'] = 0
+    if json_mode == 'json_object':
+        request_data['response_format'] = {'type': 'json_object'}
+    payload = json.dumps(request_data, ensure_ascii=False).encode('utf-8')
+    req = Request(url + '/chat/completions', payload,
+                  headers={'Content-Type': 'application/json',
+                           'Authorization': 'Bearer ' + (key or 'local')},
+                  method='POST')
+
     try:
-        with urlopen(req,timeout=timeout) as resp:
-            data=json.loads(resp.read(2_000_000).decode('utf-8'))
-        answer=data['choices'][0]['message']['content']
-        if isinstance(answer,list):
-            answer=_content(answer)
-        cleaned=answer.strip()
-        if cleaned.startswith('```'):
-            cleaned=re.sub(r'^```(?:json)?\s*|\s*```$','',cleaned).strip()
-        value=json.loads(cleaned)
-        if not isinstance(value,dict):
-            raise ValueError('model JSON response must be an object')
-        return value
-    except (URLError,HTTPError,UnicodeError,json.JSONDecodeError,TimeoutError,ValueError,KeyError,IndexError,TypeError) as exc:
-        raise VKFError(f'model request failed or returned invalid JSON: {exc}') from exc
+        with urlopen(req, timeout=timeout) as resp:
+            raw = resp.read(2_000_001)
+            headers = getattr(resp, 'headers', None)
+            status = getattr(resp, 'status', None)
+    except HTTPError as exc:
+        # The provider's message might quote the user's private prompt. Surface
+        # structured error metadata only, not the entire provider error body.
+        info = ''
+        try:
+            issue = json.loads(exc.read(8192).decode('utf-8'))
+            if isinstance(issue, dict) and isinstance(issue.get('error'), dict):
+                error = issue['error']
+                fields = [(name, error.get(name)) for name in ('type', 'code', 'param')]
+                info = ' ' + ', '.join(f'{k}={v}' for k, v in fields
+                                         if isinstance(v, (str, int)) and len(str(v)) <= 100)
+        except (UnicodeError, json.JSONDecodeError, OSError):
+            pass
+        rid = exc.headers.get('x-request-id', '') if exc.headers else ''
+        raise VKFError(f'HTTP stage: status={exc.code};{info}; request_id={rid or "unknown"}; '
+                       'check API endpoint and supported request parameters') from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise VKFError(f'transport stage: {type(exc).__name__}; '
+                       'check endpoint, TLS/network and configured timeout') from exc
+
+    ctype = headers.get('content-type', 'unknown') if headers else 'unknown'
+    rid = headers.get('x-request-id', 'unknown') if headers else 'unknown'
+    meta = f'status={status if status is not None else "unknown"}, content_type={ctype}, request_id={rid}'
+    if len(raw) > 2_000_000:
+        raise VKFError(f'HTTP response stage: body exceeds 2000000 bytes ({meta})')
+    if not raw.strip():
+        raise VKFError(f'HTTP response stage: empty body ({meta}); '
+                       'check whether api-base points to a Chat Completions endpoint')
+    try:
+        data = json.loads(raw.decode('utf-8-sig'))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise VKFError(f'HTTP response stage: body is not valid JSON ({meta}); '
+                       'check endpoint/provider response format') from exc
+    if not isinstance(data, dict):
+        raise VKFError(f'HTTP response stage: expected JSON object ({meta})')
+    if 'error' in data:
+        error = data['error']
+        kind = error.get('type') if isinstance(error, dict) else type(error).__name__
+        code = error.get('code') if isinstance(error, dict) else None
+        raise VKFError(f'HTTP response stage: provider returned error type={kind}, code={code} ({meta})')
+    choices = data.get('choices')
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise VKFError(f'API schema stage: missing choices[0] ({meta}); '
+                       'endpoint may use a different API protocol than Chat Completions')
+    choice = choices[0]
+    finish_reason = choice.get('finish_reason')
+    message = choice.get('message')
+    if not isinstance(message, dict):
+        raise VKFError(f'API schema stage: missing choices[0].message ({meta})')
+    answer = message.get('content')
+    if isinstance(answer, list):
+        answer = _content(answer)
+    usage = data.get('usage') or {}
+    output_tokens = (usage.get('completion_tokens') if isinstance(usage, dict) else None)
+    details = usage.get('completion_tokens_details') if isinstance(usage, dict) else None
+    reasoning_tokens = (details.get('reasoning_tokens') if isinstance(details, dict) else None)
+    completion_meta = (f'finish_reason={finish_reason}, output_tokens={output_tokens}, '
+                       f'reasoning_tokens={reasoning_tokens}, {token_field}={max_tokens}')
+    if message.get('refusal'):
+        raise VKFError(f'model output stage: refusal present ({completion_meta}; {meta})')
+    if not isinstance(answer, str) or not answer.strip():
+        raise VKFError(f'model output stage: empty message.content ({completion_meta}; {meta}); '
+                       'possible output-budget exhaustion or provider-specific response schema')
+    if finish_reason == 'length':
+        raise VKFError(f'model output stage: incomplete completion (finish_reason=length; '
+                       f'{completion_meta}; {meta}); increase output-token budget if supported')
+    cleaned = answer.strip()
+    if cleaned.startswith('```'):
+        cleaned = re.sub(r'^```(?:json)?\s*|\s*```$', '', cleaned).strip()
+    try:
+        value = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise VKFError(f'model output stage: message.content is not valid JSON '
+                       f'(length={len(answer)}, {completion_meta}; {meta}); '
+                       'use structured JSON mode if supported, or inspect provider format') from exc
+    if not isinstance(value, dict):
+        raise VKFError(f'model output stage: expected JSON object, got {type(value).__name__} '
+                       f'({completion_meta}; {meta})')
+    return value
 
 
 def _llm_suggestions(text: str, model: str, api_base: str, timeout: int) -> list[dict[str, Any]]:
