@@ -1,0 +1,18 @@
+{
+  "source": "other",
+  "title": "Agent Memory 与缓存的跨领域类比",
+  "messages": [
+    {
+      "role": "user",
+      "content": "我在学习 KV Cache 和物化视图，是否可以把 Agent Memory 的长期记忆策略看作一种缓存管理问题？"
+    },
+    {
+      "role": "assistant",
+      "content": "可以作为启发性类比：它们都涉及存储与重复计算之间的权衡，但价值函数、失效条件和一致性要求并不相同。值得追问：什么样的信息应写入持久记忆，什么应该按需重新计算？"
+    },
+    {
+      "role": "user",
+      "content": "请把这个问题作为开放问题保存，而不是直接标记为已解决。"
+    }
+  ]
+}

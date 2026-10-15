@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vkf-storage-core"
+version = "0.1.0"
+description = "Local-first SQLite cognitive-object storage core for Virtual Knowledge Frontier"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "VKF prototype"}]
+license = {text = "MIT"}
+dependencies = []
+
+[project.scripts]
+vkf = "vkf_storage.cli:main"
+
+[tool.setuptools.package-data]
+vkf_storage = ["migrations/*.sql"]
+
+[tool.setuptools.packages.find]
+include = ["vkf_storage*"]
