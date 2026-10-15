@@ -1,216 +1,219 @@
-# VKF Storage Core v0.1.0
+# VKF Storage Core v0.1.1
 
-**Virtual Knowledge Frontier：可独立运行的个人认知存储核心。**
+**SQLite Cognitive Core + Obsidian Bridge + `.json` / `.md` Conversation Import**
 
-这是一个小型、完全离线的 Storage Core 实现，不是完整的 VKF 聊天软件。它把知识、想法、理解、开放问题和交叉观点存进本地 SQLite，提供可检索、可恢复、有约束的关系与版本历史，并把模拟模型提议隔离在 Candidate 区域。
+这是 VKF（Virtual Knowledge Frontier）的一个可直接测试的小版本：保留 v0.1.0 的 SQLite 认知对象、语义关系、状态机、审计和事务；增加本地 Obsidian Markdown 工作空间以及多来源聊天导入、自动候选提炼。
 
-## 你拿到的是什么
+**设计原则：SQLite 是已确认知识和认知状态的权威记录；Obsidian 是人可以直接浏览和编辑的 Markdown 视图。** 原始聊天与 AI/规则提取的候选分离；候选需要人工确认，绝不会在导入时自动升级为用户已掌握的知识。
 
-- ✅ 5 类正式认知对象：Knowledge / Idea / Understanding / Question / CrossInsight。
-- ✅ 关系网络：supports、depends_on、contradicts、analogous_to、synthesizes、raises、answers。
-- ✅ 正式对象版本修订、乐观并发校验、按旧版本产生**新版本**的恢复。
-- ✅ Question 状态转换、回答依据校验；CrossInsight 至少需要两个来源。
-- ✅ Conversation、Message 和规范化 JSON 对话导入（含重复检测）。
-- ✅ Candidate 的提出、接受、拒绝、合并，**未批准的候选不能进入正式搜索结果**。
-- ✅ 中文子串/英文搜索、1~2 跳关系探索、手工 Frontier 建议和审核。同一来源对象、目标问题、信号的重复 Frontier 提议只保留一条，避免只是措辞不同就反复提醒。
-- ✅ 本地 SQLite 事务、数据库完整性检查、在线备份、备份恢复、JSON 导出。
-- ✅ API 及 CLI，纯 Python 标准库，**无网络访问**。
+## 1. 环境
 
-**首版尚不支持：** 自动对话模型调用、自动 Extractor/Linker、任意平台原生聊天导出格式、向量/语义搜索、GUI、自动 Frontier 排序与自动 Agent。`candidate propose` 只是用来模拟模型候选，**不会真的调用模型**；`frontier suggest` 也是手工触发。
+- Python **3.10+**，自带 SQLite 需支持 `STRICT`、JSON 和 FTS5 `trigram`（通常 SQLite 3.38+）。
+- macOS、Windows、Linux 均可尝试；实现不依赖系统命令、外部 Python 库或 Obsidian 插件。
+- Obsidian 桌面版：<https://obsidian.md/>。先不需要安装第三方社区插件。
+- 默认**不调用互联网**。`--extract llm` 才向你明确配置的 OpenAI-compatible `chat/completions` API 发送对话文本。云端 API 可能产生费用。
 
-## 环境
-
-- Python >= 3.10，需内置支持 SQLite `STRICT`、JSON 和 FTS5 `trigram` 的 SQLite。建议 SQLite >= 3.38。
-- Windows / Linux / macOS 均可尝试；当前自动化测试环境为 Python 3.13 + SQLite 3.46。
-- 无需 `pip install`，也无需 API key。
-
-查看本机版本：
+在项目解压的根目录执行：
 
 ```bash
 python -c "import sys, sqlite3; print(sys.version); print(sqlite3.sqlite_version)"
+python -m unittest discover -s tests -v
 ```
 
-若出现 `no such tokenizer: trigram` 或 `near STRICT: syntax error`，说明本机 SQLite 版本或构建不符合最低要求；不会暗中用一个功能不完整的数据库继续运行。
+如果报 `no such tokenizer: trigram` 或 `STRICT` 错误，需升级本机 Python/SQLite 构建。所有命令使用项目根目录的 `python -m vkf_storage`，**不需要 pip install**。
 
-## 5 分钟开始
+## 2. 五分钟：从聊天历史到 Obsidian
 
-解压后在 **项目根目录** 打开终端，执行：
+先在 Obsidian 中新建或选择一个**专用测试 Vault**（建议空文件夹），记下其绝对路径；也可以让命令先创建该文件夹，再在 Obsidian 选择 **Open folder as vault / 打开文件夹作为仓库**。
 
 ```bash
-# 初始化一个完全独立的数据库
+# 1. 新建本地知识数据库（第一次运行）
 python -m vkf_storage --db ./vkf.db init
 
-# 新建一条知识
-python -m vkf_storage --db ./vkf.db object add knowledge --title "KV Cache" --body "它可以复用历史注意力的 K/V 状态。"
+# 2. 导入 Markdown 对话并生成 Obsidian 的 VKF/ 文件夹
+python -m vkf_storage --db ./vkf.db import-history ./examples/sample_dialogue.md --vault "./my-obsidian-vault"
 
-# 搜索中文（也支持短中文词）
-python -m vkf_storage --db ./vkf.db search "KV"
-python -m vkf_storage --db ./vkf.db search "注意力"
+# 3. 导入一组历史数据（文件夹递归，或单个 .json/.md）
+python -m vkf_storage --db ./vkf.db import-history "./my-chat-exports" --vault "./my-obsidian-vault"
 
-# 查看所有正式对象
-python -m vkf_storage --db ./vkf.db object list
+# 4. 查看等待你审核的提炼结果（规则默认仅提取显式观点/问题）
+python -m vkf_storage --db ./vkf.db candidate list
 
-# 健康检查
+# 5. 健康检查
 python -m vkf_storage --db ./vkf.db doctor
 ```
 
-CLI 一律输出 JSON，适合阅读，也适合以后由 GUI 或脚本调用。对象 ID 由程序产生，在 JSON 结果的 `id` 字段中，可以复制到后续命令里。
+在 Obsidian 里打开 `VKF/00 - Start Here.md`。你会看到：
 
-如果喜欢简短的命令，可以在 Python 环境中执行 `python -m pip install -e .`，之后直接调用 `vkf --db ./vkf.db ...`。这一步是可选的，并可能需要本机已安装构建工具；不必依赖它才能测试。
+```text
+my-obsidian-vault/
+  VKF/
+    00 - Start Here.md     自动生成的导航入口
+    VKF Objects.base       Obsidian Bases 数据表视图
+    Open Questions.base    问题管理视图
+    Candidate Inbox.base  待审核候选视图
+    Conversations/         已导入的对话原文（Markdown 只读投影）
+    Candidates/            待审核或已决议的提炼建议（只读投影）
+    Knowledge/             正式知识
+    Ideas/                 正式想法
+    Understanding/         经过确认的理解
+    Questions/             长期开放问题
+    CrossInsights/         跨领域思想
+```
 
-### 用完整示例自动构建认知网络
+**注意**：导入完成后，`Knowledge/` 不一定立即出现内容。这是刻意设计：候选会先进入 Candidate Inbox；只有人工批准才转成正式认知对象。自动入库 ≠ 自动采信。
+
+通过 CLI 批准一条候选（从 `candidate list` 复制 `id`）：
 
 ```bash
-python examples/demo_session.py --db ./vkf-demo.db
-python -m vkf_storage --db ./vkf-demo.db stats
-python -m vkf_storage --db ./vkf-demo.db candidate list
-python -m vkf_storage --db ./vkf-demo.db search "缓存"
+python -m vkf_storage --db ./vkf.db candidate show <candidate-id>
+python -m vkf_storage --db ./vkf.db candidate approve <candidate-id>
+python -m vkf_storage --db ./vkf.db bridge export "./my-obsidian-vault"
 ```
 
-示例会新建两个 Knowledge、一个 CrossInsight、一个 Question、一条模拟对话、一个**待审核** Candidate 和一个 Frontier 建议，并打印所有 ID。为了保护已有数据，示例脚本拒绝覆盖现有数据库；请改用新的 `--db` 路径重新运行。
+批准后打开 `Knowledge/`、`Ideas/` 或 `Questions/` 中的新笔记。`VKF/00 - Start Here.md` 会同步更新。可在 Obsidian 设置中开启核心插件 **Bases**，打开 `VKF/VKF Objects.base`、`VKF/Open Questions.base` 和 `VKF/Candidate Inbox.base` 浏览结构化视图。**不要在 Bases 中直接修改 `vkf_` 托管属性**，这会触发 Bridge 冲突检查。
 
-### 已有对话怎么导入？
-
-首版只接受 **VKF 规范化 JSON**，示例在 `examples/sample_conversation.json`：
+还可以测试已经存在的认知网络：
 
 ```bash
-python -m vkf_storage --db ./vkf.db conversation import-json examples/sample_conversation.json
-python -m vkf_storage --db ./vkf.db conversation list
+python examples/demo_session.py --db ./demo.db
+python -m vkf_storage --db ./demo.db bridge export "./demo-obsidian-vault"
 ```
 
-格式为：
+图关系通过 Obsidian 的 `[[内部链接]]` 呈现，类型、方向及建立理由在笔记的 `VKF Relations (generated)` 中完整保留。
 
-```json
-{
-  "source": "other",
-  "title": "学习记录",
-  "messages": [
-    {"role": "user", "content": "为什么需要长期记忆？"},
-    {"role": "assistant", "content": "可以考虑存储成本与推理成本的权衡。"}
-  ]
-}
+## 3. Obsidian → SQLite 的受控编辑
+
+每个正式对象笔记大致如下：
+
+```markdown
+---
+vkf_id: "obj_..."
+vkf_kind: "knowledge"
+vkf_revision: 1
+vkf_status: "active"
+aliases: ["KV Cache"]
+tags: [vkf, vkf/knowledge]
+---
+
+<!-- VKF:EDITABLE:START -->
+# KV Cache
+
+你在这里编辑解释和个人理解。
+
+<!-- VKF:EDITABLE:END -->
+
+## VKF Relations (generated)
+- `raises` → [[VKF/Questions/...|待解决的问题]] — 联系的理由
 ```
 
-字段 `source` 可用 `live/chatgpt/claude/other`；消息 `role` 可用 `system/user/assistant/tool`。
-
-此功能**不是** ChatGPT 或 Claude 原始 JSON 的原生解析器，需要先整理成以上规范化结构。系统保存消息正文到数据库，并记录文件来源路径和哈希；**不会自动复制原始 JSON 文件**，如果要保存原件需自行归档。
-
-相同内容重复导入时，返回 `created: false`，不会多建一份对话；调整 `title` 不会破坏这一去重规则。
-
-## 人工模拟 Candidate 审核
-
-先通过 `conversation import-json` 导入示例，记录输出中的 `conversation_id`；然后运行：
-
-```text
-python -m vkf_storage --db ./vkf.db conversation show <conversation_id>
-```
-
-在返回结果里寻找某条消息的 `id`，然后：
-
-```text
-python -m vkf_storage --db ./vkf.db candidate propose <conversation_id> <message_id> idea --title "记忆缓存策略" --body "或许可以把长期记忆淘汰视为成本优化。"
-python -m vkf_storage --db ./vkf.db candidate list
-python -m vkf_storage --db ./vkf.db candidate approve <candidate_id>
-python -m vkf_storage --db ./vkf.db search "记忆缓存"
-```
-
-注意：批准前，`search` 无法找到这条 Candidate；批准后才会创建正式对象。批准、拒绝和合并都是终态，重复决策应报告冲突。
-
-关系操作样例（使用 `object add` 返回的 ID）：
-
-```text
-python -m vkf_storage --db ./vkf.db relation add <knowledge_id> <question_id> raises --reason "这条知识产生了进一步的问题"
-python -m vkf_storage --db ./vkf.db graph <knowledge_id> --depth 2
-```
-
-命令 `--reason` 是**必填的语义解释**，不是可省略的附加备注。
-
-## 版本、备份和恢复
-
-```text
-# 修改对象，必须说明原因，可选指定当前 revision 防止覆盖并发修订
-python -m vkf_storage --db ./vkf.db object edit <id> --body "更新过的理解" --reason "发现了一个反例" --expected-revision 1
-
-# 查看不可变的历史
-python -m vkf_storage --db ./vkf.db object history <id>
-
-# 从第一版恢复，将生成一个更高的新 revision，而不是删除历史
-python -m vkf_storage --db ./vkf.db object restore <id> 1 --reason "回到先前的解释"
-
-# 制作 SQLite 备份，不允许覆盖同名已有文件
-python -m vkf_storage --db ./vkf.db backup ./vkf-backup.db
-
-# 恢复备份到一个全新的数据库路径
-python -m vkf_storage --db ./restored.db restore-db ./vkf-backup.db
-
-# 可读 JSON 全量导出（不是用于恢复的格式）
-python -m vkf_storage --db ./vkf.db export-json ./vkf-export.json
-```
-
-`restore-db` **必须指向一个不存在的目标文件**。这避免误覆盖已有认知。恢复后可用 `doctor` 检查。可靠的数据恢复路径是 SQLite 备份；`export-json` 暂时仅为只读可移植快照，没有对应的全量导入命令。
-
-### 旧 v0.1 Schema 的升级
-
-如果曾使用上一次的 `vkf_schema_v0.1.sql` 建立数据库，现在执行：
+仅修改 `<!-- VKF:EDITABLE:START -->` 和 `<!-- VKF:EDITABLE:END -->` **之间的 H1 标题和正文**。不要直接修改 YAML 中的 `vkf_id`、`vkf_revision`、`vkf_status`，也不要编辑自动生成的关系、来源和问题状态区域。这些字段必须通过 VKF 的状态机/关系接口修改；因此 Obsidian Properties 面板中的状态字段是*只读语义*，并不是 GUI 审核入口。
 
 ```bash
-python -m vkf_storage --db ./old-vkf.db init
+# 预览 Obsidian 中有什么人工编辑，不写数据库
+python -m vkf_storage --db ./vkf.db bridge status "./my-obsidian-vault"
+python -m vkf_storage --db ./vkf.db bridge pull "./my-obsidian-vault"
+
+# 人工检查 ready/conflicts 后，确认落库为新 revision
+python -m vkf_storage --db ./vkf.db bridge pull "./my-obsidian-vault" --apply
+
+# 查看版本历史
+python -m vkf_storage --db ./vkf.db object history <object-id>
 ```
 
-检测到 `user_version=1` 时，会先自动生成 `old-vkf.db.pre-v2.<随机标识>.db` 私有备份，再以事务升级到 Schema 2；旧记录不会被主动删除。此前通过裸 SQL 手工创建但缺乏 `object_versions` 的对象仍可查询，但 `doctor` 可能报告缺少版本历史；这是**历史数据本身不符合新的版本管理约束**，首版不会替你猜测或伪造历史。
+`bridge export` **绝不默默覆盖已修改的正式对象笔记**；它会报告冲突。`pull --apply` 如果发现元数据改动、关系区改动、SQLite 版本过期、ID 不匹配等情况，也会拒绝相关笔记的更新。导出的原始对话、Candidate 和索引页面有单独的只读文件哈希保护，手动改动后同样不会被脚本覆盖。由于 SQLite 与文件系统无法跨系统原子提交，极端崩溃仍可能产生需要重新 export 的中间状态，正式工作请先备份，避免多个设备/进程同时修改。
 
-## 运行自动测试
+如果你主动删除了一个生成的对象笔记，桥接不会默认悄悄恢复：
+
+```bash
+python -m vkf_storage --db ./vkf.db bridge export "./my-obsidian-vault" --restore-missing
+```
+
+**当前不支持**用户在 Obsidian 中自由重命名/移动 `VKF/` 下的托管对象文件；如果要调整标题，请修改可编辑区的 H1，而不是文件名。欢迎在 `VKF/` 之外自由创建其他个人笔记，不受 Bridge 管理。
+
+## 4. 历史格式
+
+新命令：
+
+```bash
+python -m vkf_storage --db ./vkf.db import-history <file-or-folder> [--source chatgpt|claude|other] [--extract none|heuristic|llm] [--vault ./vault]
+```
+
+支持：
+
+1. **ChatGPT 原生导出 JSON**：含 `mapping` / `current_node` 的一个对话对象，或者整个 `conversations.json` 数组。遵循当前显示的分支沿 parent 链恢复顺序；非当前分支、非文本和隐藏工具消息跳过并报告；图片/附件二进制不导入。下载 ChatGPT 官方数据导出 ZIP 后，请先解压，找到 `conversations.json` 或分卷 JSON。
+2. **Claude 常见 JSON**：`chat_messages` 数组，`sender` 为 human/assistant；解析文本 `content` 块。不同工具的 Claude 导出格式存在差异，非标准导出请用样例测试。
+3. **VKF 规范化 JSON**：`{ "title": "...", "source": "other", "messages": [{"role":"user", "content":"..."}] }`。也支持通用 `conversations` 数组和简单角色消息数组。
+4. **对话 Markdown**：`## User` / `## Assistant`、`## Human (时间):` / `## Claude (时间):`、`### 用户` / `### 助手`、`**User:**` / `**Assistant:**` 等角色标题；支持 `# 1. Human` 和前置 YAML `title` / `source`。代码围栏中的伪角色标题不会误拆。请参考 `examples/sample_dialogue.md`。
+5. **目录递归**：自动筛选 `.json` / `.md`；遇到单个坏文件，报告该文件错误，继续处理其他文件。最多 5000 个文件，每个文件上限 120 MiB；大型 ChatGPT 导出可以先切成多个 JSON 文件。
+
+如来源文件提供消息时间戳（例如 ChatGPT JSON 的 `create_time`、Claude 的 `created_at`、Markdown 角色标题里的时间），导入器会把它存入独立的消息元数据表，并在 Vault 归档中展示；没有日期的记录不会自动编造日期。对于没有明确时区的 Markdown 原文，原样保留时间字符串。
+
+导入去重：先比较原始文件 SHA-256，再根据**来源 + 角色/正文序列**判定重复对话；同一来源、同一外部对话 ID 但内容被改动的再次导入会报告**冲突**，不会偷偷覆盖旧对话及其 Candidate。跨平台不同来源的同一语义对话尚不提供自动合并。
+
+`conversation import-json` 仍保留，是 v0.1.0 的规范化 JSON 兼容入口；推荐新数据使用 `import-history`。
+
+## 5. 自动候选提炼（Candidate-first）
+
+### 默认：`--extract heuristic`
+
+纯本地、无需 API key，保守提取**用户话语**中的显式问题（例如 `?`、`？`、`问题：`）和显式思想（例如 `我认为`、`我在想`、`假设`、`想法：`）。对于 `知识：`、`理解：` 等标注，也能生成相应种类的候选。它不会声称理解了所有自然语言，也**不会自动提取 AI 回复中的知识**；这适合做不会产生太多噪声的离线归档测试。
+
+### 进阶：`--extract llm`
+
+使用**你自己明确配置**的 OpenAI-compatible 模型端点，提取 `Knowledge / Idea / Understanding / Question`，带对话 turn 索引，最多分块发送（超长单轮会截断并给出 warning），存入 Candidate Inbox，等待人工批准。模型可产生错误、重复或空候选；这不代表它们已被事实验证或由你真正理解。
+
+macOS / Linux（Windows PowerShell 用 `$env:VKF_API_KEY = '...'`）：
+
+```bash
+export VKF_API_KEY="YOUR_API_KEY"
+python -m vkf_storage --db ./vkf.db import-history ./my-exports \
+  --extract llm --model YOUR_MODEL_ID --api-base https://YOUR_PROVIDER/v1 \
+  --vault "./my-obsidian-vault"
+```
+
+或对之前已导入的某一段对话再次提炼：
+
+```bash
+python -m vkf_storage --db ./vkf.db extract <conversation-id> \
+  --mode llm --model YOUR_MODEL_ID --api-base https://YOUR_PROVIDER/v1
+python -m vkf_storage --db ./vkf.db bridge export "./my-obsidian-vault"
+```
+
+本地 OpenAI-compatible 接口（如配置了相应兼容服务的 Ollama）可使用 `http://127.0.0.1:11434/v1` 和该服务真实支持的模型 ID。此应用仅对 HTTPS 或 localhost HTTP 发请求，不读取任何 Obsidian 账号信息；密钥从环境变量获取，不写入数据库。模型请求只记录 SHA-256 输入指纹与调用结果状态，不保存请求的全文副本。**不要将包含敏感信息的历史对话发往不信任的云端模型。**
+
+解析器按要求使用 JSON Schema 形状 `{ "candidates": [...] }`，丢弃不合法的条目，保存有效候选及消息来源。暂不进行向量去重、自动 CrossInsight 构建、自动批准。未来会根据你的 Candidate 质量反馈改进增量提炼。
+
+## 6. 更新已有 v0.1.0 数据库
+
+**先手工另存一份数据库备份更稳妥**：
+
+```bash
+python -m vkf_storage --db ./vkf.db backup ./vkf-manual-backup.db
+python -m vkf_storage --db ./vkf.db init
+python -m vkf_storage --db ./vkf.db doctor
+```
+
+`init` 检测 Schema 2，会使用 SQLite 在线备份生成 `.pre-v3.<随机>.db`，再迁移到 Schema 3；Schema 1 先备份再逐步迁移。迁移不会主动删除对象、关系或对话。无需把旧数据库导成 JSON 重新导入，**也不要用文件复制替换正在被写入的 WAL 数据库**。
+
+## 7. 常见问题与当前限制
+
+- **Obsidian 中能直接按 YAML 属性修改问题状态吗？** 暂时不能。使用 CLI 的 `question set` / `object status`，再 `bridge export`。直接编辑生成元数据会拒绝同步。可以用 Obsidian Bases 查看过滤属性，但不应拿它绕过状态机。
+- **能直接在 Obsidian 插件里聊天吗？** 本版本未开发或安装插件；可以独立配置 Copilot 等插件，但 AI 插件产生的记录需导出为支持的聊天 Markdown/JSON 再导入 VKF。Bridge 仅负责文件视图，不接管其他插件的内部聊天历史。
+- **能自动把所有历史转成可靠知识吗？** 离线模式不能。LLM 模式会提议候选，但不自动认证；相似观点合并和跨域链接仍需后续算法或人工操作。
+- **能无损还原所有 ChatGPT/Claude 多模态历史吗？** 不能。只导入当前分支中可见的纯文本消息，跳过二进制附件、图像、音视频以及部分工具内容。
+- **能像普通 Obsidian 笔记一样随意改名移动文件吗？** 当前托管目录内不支持；Bridge 用稳定路径和记录过的哈希判断改动。自由笔记请写在 `VKF/` 外。
+- **这是自动同步工具吗？** 不是。需要显式执行 `bridge export`、`bridge pull`。一开始采用人工确认的单向/受控双向流程，避免误覆盖。
+- **是否内置加密？** 否。SQLite 和 Vault 都在本机以明文保存；请使用操作系统磁盘加密、合理备份和 Vault 隐私设置。
+
+## 8. 反馈与复现
+
+自动测试：
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-覆盖对象不变量、状态机、搜索特殊字符、中英文、导入幂等性、事务回滚、Candidate 隔离、CrossInsight 双来源、SQLite 备份恢复、迁移兼容和命令行错误码等。详见 `TEST_PLAN.md`。
+优先跟随 `TEST_PLAN.md` 的人工验收任务，用 `FEEDBACK_TEMPLATE.md` 填写测试结果。如果出现问题，请仅分享错误输出、**匿名样本**和复现步骤，不要发送完整私人聊天历史或 API 密钥。
 
-## Python API 小例子
-
-```python
-from vkf_storage import Storage
-
-Storage.initialize("my-vkf.db")
-with Storage("my-vkf.db") as store:
-    q = store.create_object("question", "为什么需要 Memory？", "何时保存，何时重新推理？")
-    k = store.create_object("knowledge", "缓存权衡", "使用存储空间换取计算时间")
-    store.add_relation(k["id"], q["id"], "raises", "计算复用引出了记忆保存策略问题")
-    print(store.neighborhood(q["id"], depth=1))
-    print(store.doctor())
-```
-
-## 行为原则及限制
-
-1. **用户认知主权**：正式节点必须由用户显式创建或人工批准候选；没有自动写入记忆的模型任务。
-2. **不把模型候选当成事实**：Candidate 单独存储；其 `proposed_relations_json` 目前不自动生效。
-3. **不做学术溯源系统**：保存最小来源信息（对话、消息、审核记录、对象版本）。
-4. **修改而非抹除**：删除未作为公开操作；通过归档和新版本保持历史。
-5. **可复原**：关键多步骤写操作使用 SQLite 事务；备份使用官方在线备份机制。升级已有 Schema v1 数据库前自动建立一个私有备份。
-6. **Local-first 不等于加密**：SQLite 文件、备份及 JSON 导出**均未加密**。它们包含对话和观点；请使用操作系统磁盘加密，不要将数据库直接放在公开同步目录。
-7. **单机试验性质**：未进行大型语料、跨设备并发和对抗性输入安全认证，不宜立即作为唯一知识备份。
-8. **非完整 Agent 系统**：Extractor/Linker/Context Builder 的模型调用将在后续版本引入。
-9. **Context 日志做数据最小化**：`Storage.log_model_call` 只接受 SHA-256 十六进制输入指纹，以及确实存在的对象 ID/版本，不会代你记录完整私密 Prompt。
-
-## 项目结构
-
-```text
-vkf_storage/
-  __init__.py
-  __main__.py
-  cli.py                 # CLI 与 JSON 错误输出
-  core.py                # Repository / transaction / state machine
-  migrations/
-    001_initial.sql      # 初始 Schema
-    002_guardrails.sql   # 历史只追加与候选锁定保护
-examples/
-  sample_conversation.json
-  demo_session.py
-tests/
-  test_storage.py        # 离线回归测试
-TEST_PLAN.md             # 人工验收与主观认知收益测试
-FEEDBACK_TEMPLATE.md     # 给下个版本的反馈记录
-```
-
-**下一版优先方向：** 根据你对 `TEST_PLAN.md` 的实际使用反馈，确定先做哪一个：更好用的交互 CLI/GUI、API 模型会话、增量提炼、语义去重、还是更智能的 Context Builder。
+原始对话消息在 `messages` 表中有序保存；正式对象通过 `object_sources` 与已批准候选关联到来源消息，Obsidian 对象笔记中会生成指向对话归档的链接。项目许可证见 `LICENSE`。

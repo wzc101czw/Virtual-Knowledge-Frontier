@@ -27,13 +27,13 @@ class StorageTests(unittest.TestCase):
         return self.st.create_object(kind, title, body, **kwargs)
 
     def test_init_reload_and_sanity(self):
-        self.assertEqual(self.st.db.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertEqual(self.st.db.execute("PRAGMA user_version").fetchone()[0], 3)
         self.assertEqual(self.st.db.execute("PRAGMA foreign_keys").fetchone()[0], 1)
         a = self.obj(title="KV Cache", body="中文/English observations")
         with Storage(self.path) as second:
             self.assertEqual(second.get_object(a["id"])["body"], "中文/English observations")
             self.assertTrue(second.doctor()["ok"])
-        self.assertEqual(Storage.initialize(self.path)["schema_version"], 2)
+        self.assertEqual(Storage.initialize(self.path)["schema_version"], 3)
 
     def test_init_upgrade_previous_v1_without_losing_data(self):
         oldpath = Path(self.tmp.name) / "previous.db"
@@ -43,10 +43,10 @@ class StorageTests(unittest.TestCase):
             db.execute("INSERT INTO conversations(id,source,title) VALUES('old','other','older conversation')")
         with self.assertRaises(UnsupportedSchema):
             Storage(oldpath)
-        self.assertEqual(Storage.initialize(oldpath)["schema_version"], 2)
+        self.assertEqual(Storage.initialize(oldpath)["schema_version"], 3)
         with Storage(oldpath) as db:
             self.assertEqual(db.get_conversation("old")["title"], "older conversation")
-            self.assertEqual(db.db.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(db.db.execute("PRAGMA user_version").fetchone()[0], 3)
 
     def test_never_overwrite_non_vkf_database(self):
         bad = Path(self.tmp.name) / "not-vkf.db"

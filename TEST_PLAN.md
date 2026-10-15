@@ -1,82 +1,58 @@
-# VKF Storage Core — 初步人工验收计划
+# VKF v0.1.1 人工验收测试计划
 
-测试的目标不是证明 VKF “已经提高认知水平”。首版只能验证：**长期知识存储是否可靠、增量审核是否可控、关系/问题模型是否值得继续开发、界面摩擦是否可以接受。**
+本计划用于发现**架构设计**和**认知体验**问题，不只是确认命令没有报错。请使用一份新的数据库与独立 Obsidian 测试 Vault。每项记下 PASS / FAIL、意外行为、截图或匿名复现信息。务必保存原始对话的独立备份，不要用私人资料首次测试。
 
-## 准备
+## A · 工程完整性（优先完成）
 
-1. 在项目目录运行：`python -m unittest discover -s tests -v`。
-2. 创建独立实验库：`python examples/demo_session.py --db ./vkf-human-test.db`。该路径如果已经存在，请换一个名字。
-3. 记录 Demo 输出的 IDs。后续 `<id>` 占位符换成相应的真实 ID。
-4. 建议选择 **你自己真实关心的一个 AI 话题**，例如 Agent Memory、数学推理、GPU/Ascend、长上下文或知识图谱。
-5. 每个任务记录三件事：是否成功、实际耗时（手动计时即可）、哪里产生认知或操作负担。
-
-## A. 工程可靠性：可客观判断通过/失败
-
-| 测试 ID | 操作 | 预期结果 | 常见失败信号 |
+| ID | 操作 | 期望结果 | 反馈重点 |
 |---|---|---|---|
-| A1 持久化 | 新建一个 Idea，关闭进程，再运行 `object show <id>` | 原文/类型/ID/版本一致 | 丢记录、中文乱码、意外变更 |
-| A2 未批准隔离 | `candidate list`，取 Demo Pending Candidate 的 title 用 `search` 查找；然后 `candidate approve <id>` 再查 | 批准前正式搜索**不返回**候选；批准后返回 | 自动将 AI 提议视为知识 |
-| A3 导入去重 | 两次运行 `conversation import-json examples/sample_conversation.json` | 第一次 `created=true`，第二次 `created=false`，消息数量不增长 | 产生重复对话 |
-| A4 关系方向 | 给两个 Knowledge 添加 `analogous_to`，反向重复添加同类关系 | 首次成功，反向重复返回冲突；`graph` 仍能从两端发现它 | 对称边重复或方向错误 |
-| A5 更新与回滚 | 用 `object edit` 修改 Idea，`object history` 查看，再用 `object restore` 恢复旧版 | 每次实质编辑增加版本；恢复**生成新版本**，历史不丢 | 丢失上一版、覆盖全部历史 |
-| A6 状态正确 | 新建 Question，立即 `question set <id> answered --reason ...`（不附解决说明）；之后关联一个有效 `answers` 边再试 | 无依据回答被拒绝；有依据后允许；`answered` 可以明确 reopen | 未经认可便“自动解决” |
-| A7 洞察来源 | 新建 CrossInsight 时只传 1 个 `--source-id`，然后传 2 个不同来源 | 1 个来源失败并不落库；2 个来源成功，图谱存在两条 synthesizes 边 | 悬空节点、部分写入 |
-| A8 数据安全 | 运行 `backup`、`restore-db`（新路径）并 `doctor`，对比 `stats` | 恢复库 `ok=true` 且记录数一致，覆盖已有路径被拒绝 | 数据缺失、覆盖、损坏 |
-| A9 检索边界 | 依次搜索 `KV`、`物化`、`100%`、不存在的词，再修改某对象的 title | 正确返回/无结果，百分号按字面量，旧标题不再命中 | 字符串误解释为 SQL/过滤失效 |
-| A10 旧库迁移 | 在副本或实验 v1 库上运行 `init` | 自动生成 `.pre-v2.*.db`，新 Schema 为 2，旧数据仍在 | 破坏旧库、未备份、静默修改 |
+| A01 | 运行 `python -m unittest discover -s tests -v` | 全部测试通过 | Python、SQLite、OS 版本 |
+| A02 | 用 `examples/sample_dialogue.md` 导入两次 | 第二次 created=0，候选不重复 | 幂等性是否直观 |
+| A03 | 导入 `examples/chatgpt_sample.json` | 根据 current_node 只得到当前分支消息 | 分支遗漏是否透明 |
+| A04 | 导入包含一个错误文件的目录 | 其他文件继续入库、坏文件有显式错误 | 错误定位是否容易 |
+| A05 | `bridge export` 生成 Vault 并在 Obsidian 打开入口 | 普通 Markdown + 链接显示 | Properties、中文标题、链接表现 |
+| A06 | 通过 `candidate approve` 批准一条 Idea | 正式对象出现，原 Candidate 已决议 | 审核流程是否繁琐 |
+| A07 | 编辑对象正文；先 `bridge pull`，再 `--apply` | preview 不修改 SQLite；apply 增加 revision，正文更新 | 是否需要可视化 Diff |
+| A08 | 故意改 `vkf_revision` / 关系区 / 文件名 | 报冲突，不静默改写数据 | 错误提示是否明确 |
+| A09 | 一边修改 SQLite 一边在 Obsidian 改同一笔记 | 检出版本冲突，不覆盖双方 | 冲突解决需求 |
+| A10 | 运行 `backup`、`doctor` 并重新加载 | 所有对象与对话仍可查询，doctor.ok=true | 恢复操作是否清晰 |
 
-所有 A 类用例都应达到“通过”；如果失败，在扩大认知内容规模之前先修复。
+## B · 真实历史导入（推荐使用匿名化样本）
 
-### 示例命令和对象状态流
+从自己的历史中取三组内容：简短对话、长篇技术讨论、具有多个不同分支/格式的对话。测试 `.json` 和 `.md`：
 
-```text
-# Demo 的 open_question ID 可用于：
-python -m vkf_storage --db ./vkf-human-test.db question set <open_question_id> exploring --reason "开始研究内存生命周期"
-python -m vkf_storage --db ./vkf-human-test.db question set <open_question_id> answered --reason "尝试无依据关闭"
-# 上一条应失败；真正解决时传 --resolution-note 或先建有效 answers 边。
+- B01：导入后按 turn 查看消息有没有错位、重复、代码块断裂、角色误判。
+- B02：图片、文件、公式、代码和引用是否保留为可接受的文本；记录被跳过的资源。
+- B03：反复导入同一批聊天，检查 `created_conversations` / `duplicates` / `conflicts` 是否合理。
+- B04：对一份导出更新后再导入，确认系统没有覆盖你已批准的观点。
+- B05：对于含上百条消息的长聊天，观察 Obsidian 中是否仍能浏览和检索。
 
-# 使用 --expected-revision 避免覆盖别人或另一个 CLI 进程的更新
-python -m vkf_storage --db ./vkf-human-test.db object edit <kv_cache_id> --title "KV Cache（补充）" --reason "标题更清晰" --expected-revision 1
-python -m vkf_storage --db ./vkf-human-test.db object edit <kv_cache_id> --title "故意触发冲突" --reason "重试旧版本" --expected-revision 1
-# 后一条应报告 Conflict 且不改变当前对象。
-```
+**建议记录的数据（真实计数，以命令输出为准）**：输入文件数量、解析成功数量、总消息数、跳过分支/附件数量、重复数、错误数、手工纠正耗时。
 
-## B. 认知模型质量：需要你的真实评价
+## C · 认知模型反馈（最重要）
 
-这些测试为下一阶段的产品/研究选择提供反馈，不要求首版 AI 自动运行。
+选取数段你真的觉得有启发的 AI 对话，先用 `--extract heuristic`，然后可选用 `--extract llm` 对同一段对话提炼（需要你同意将该对话发送给相应模型）。
 
-**B1 · Knowledge vs Idea 区分**：从自己的 1 段真实对话里手动挑出约 5 条信息，分别标记 Knowledge、Idea、Understanding 和 Question。哪些内容分类很自然？哪些内容难以归类？是否有一种对象缺失？
+- C01：人工判断 Candidate 中真正值得保存的比例（precision-like），按 Knowledge / Idea / Question 分开记录。
+- C02：人工找出被遗漏的有价值思想，记录是因为格式、模型提炼、去重还是结构限制。
+- C03：拒绝、批准、合并候选的过程，是否比直接在 Obsidian 写一条笔记更费力？
+- C04：一个 Idea 逐渐演化为 Understanding 时，当前的“新建 Understanding + 关系连接”方式是否符合直觉？
+- C05：从一条新 Knowledge 建立 `raises` 或 `analogous_to` 的关系，Graph 和 Sources 是否足够有意义？
+- C06：一个开放 Question 在 Base / Graph / Markdown 列表中的可见性是否足够？
 
-**B2 · 原子化粒度**：将一个复杂 AI 主题拆成多个对象。问自己：“这个知识卡片能独立被理解吗？”记录分拆太碎或太大的例子。后续 Extractor 需要据此建立粒度策略。
+### 人工定量表（每组选取相同样本）
 
-**B3 · CrossInsight 的含金量**：建立 2 个跨领域链接，明确写下：共同结构、重要差异、一个值得继续探索的问题。评价这种形式是否真的提供启发，还是仅仅产生了漂亮但无用的连接。
+| 指标 | 离线规则 | LLM 模式 | 说明 |
+|---|---|---|---|
+| 候选数量 |  |  | 越多不代表越好 |
+| 你愿意批准的数量 |  |  | 用户判断为准 |
+| 候选重复数 |  |  | 跨轮次与跨对话重复 |
+| 明显错误/张冠李戴数 |  |  | 包括 AI 内容被误认为你的观点 |
+| 人工整理用时 |  |  | 包含候选审核时间 |
+| 你自己发现的新联系数 |  |  | 与普通笔记方法对比 |
 
-**B4 · Question 重访价值**：保存约 3 个开放问题，隔一段时间加入相关的新知识，然后手工运行 `frontier suggest`。评价其中有几个提示真正让你想进一步追问，以及哪些只是泛泛相关。
+## D · 如何提交反馈
 
-**B5 · 信息噪声与审核负担**：为 1 段对话人为创建多个 Candidate。用 approve/reject/merge 处理它们。记录从“读到原始内容”到“留下少量值得保存的认知对象”花了多少时间；记录不愿意保留的候选原因。这些反馈比对象计数更重要。
+完成 A01–A08 后即使发现问题也可以反馈，不必完成所有项目。可以将已填的 `FEEDBACK_TEMPLATE.md` 或精简后的问题描述发回对话。
 
-**B6 · 检索失配**：写下 5 条你希望通过知识库找回的问题，并实际运行 `search`。记录当前“子串检索”无法命中的语义同义表达（例如“缓存失效” vs “状态过时”）。这将帮助判断 Embedding / Context Builder 的优先级。
-
-## C. 推荐反馈量表
-
-每个维度 1～5 分，1=非常差，5=非常好；不适用填 N/A。
-
-| 维度 | 问题 |
-|---|---|
-| 使用摩擦 | 记录一个观点是否足够便捷？ |
-| 认知对象清晰度 | Knowledge / Idea / Understanding / Question / CrossInsight 是否容易区分？ |
-| 关系有效性 | 带解释的关系是否帮助组织观点？ |
-| 问题持续性 | Open / Exploring / Answered / Parked 是否符合实际探索习惯？ |
-| 数据可信度 | 是否能够相信审核、版本、备份机制？ |
-| 检索实用性 | 能否重新找到想找的内容？ |
-| 发展潜力 | 你是否愿意为下一次真实思考继续使用它？ |
-
-**下一版决策建议：**
-
-- 如果“使用摩擦”最低，优先改善交互入口（TUI / Web UI）。
-- 如果“检索实用性”最低，优先 Hybrid Search + Context Builder。
-- 如果“提炼耗时与审核负担”很高，优先开发增量 Extractor + 候选去重。
-- 如果“关系有效性”最低，先修改关系语义与 CrossInsight 生成规则，不急着做自动 Linker。
-- 如果“数据可信度”有失败，优先补测试与修复，不引入新功能。
-
-请在反馈中给出至少 1 个具体例子（可改写和脱敏），比笼统好评或差评更有帮助。
+若命令出错：提供**执行命令（隐藏密钥和本地私人路径）、Python/SQLite 版本、exit code、JSON 错误输出、匿名化最小输入**。不要分享完整私人聊天或 API 密钥。

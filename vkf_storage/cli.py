@@ -126,6 +126,37 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("state", choices=["accepted", "dismissed", "snoozed"])
     s.add_argument("--reason", required=True)
 
+    imp = sub.add_parser("import-history", help="import native ChatGPT/Claude JSON or role-labelled Markdown")
+    imp.add_argument("path", type=Path, help=".json/.md file or directory")
+    imp.add_argument("--source", choices=["live", "chatgpt", "claude", "other"],
+                     help="override source identification for all imported conversations")
+    imp.add_argument("--extract", default="heuristic", choices=["none", "heuristic", "llm"],
+                     help="default offline literal candidates; model requests are explicit only")
+    imp.add_argument("--model", help="required if --extract llm")
+    imp.add_argument("--api-base", default="https://api.openai.com/v1")
+    imp.add_argument("--timeout", type=int, default=60)
+    imp.add_argument("--vault", type=Path, help="export imported archive & candidate inbox into Obsidian vault")
+
+    ext = sub.add_parser("extract", help="generate candidate inbox entries from an already imported chat")
+    ext.add_argument("conversation_id")
+    ext.add_argument("--mode", default="heuristic", choices=["heuristic", "llm"])
+    ext.add_argument("--model")
+    ext.add_argument("--api-base", default="https://api.openai.com/v1")
+    ext.add_argument("--timeout", type=int, default=60)
+
+    bridge = sub.add_parser("bridge", help="Obsidian Markdown projection + reviewed edits")
+    bridges = bridge.add_subparsers(dest="action", required=True)
+    s = bridges.add_parser("export", help="write a managed VKF/ folder in an Obsidian vault")
+    s.add_argument("vault", type=Path)
+    s.add_argument("--restore-missing", action="store_true", help="recreate explicitly deleted managed notes")
+    s.add_argument("--no-conversations", action="store_true")
+    s.add_argument("--no-candidates", action="store_true")
+    s = bridges.add_parser("status", help="review pending Obsidian edits without modifying SQLite")
+    s.add_argument("vault", type=Path)
+    s = bridges.add_parser("pull", help="preview Obsidian edits, optionally apply them")
+    s.add_argument("vault", type=Path)
+    s.add_argument("--apply", action="store_true", help="commit safe edits as new SQLite object revisions")
+
     s = sub.add_parser("backup"); s.add_argument("file", type=Path)
     s = sub.add_parser("restore-db", help="restore a backup to a NEW database path supplied by --db")
     s.add_argument("file", type=Path)
@@ -140,6 +171,28 @@ def execute(args: argparse.Namespace):
         return Storage.restore_backup(args.file, args.db)
     with Storage(args.db) as st:
         cmd = args.command
+        if cmd == "import-history":
+            from .importers import import_history
+            from .obsidian import export_vault
+            result = import_history(st, args.path, source=args.source, extract=args.extract,
+                                    model=args.model, api_base=args.api_base, timeout=args.timeout)
+            if args.vault is not None:
+                result["obsidian"] = export_vault(st, args.vault)
+            return result
+        if cmd == "extract":
+            from .importers import extract_conversation
+            return extract_conversation(st, args.conversation_id, mode=args.mode,
+                                        model=args.model, api_base=args.api_base, timeout=args.timeout)
+        if cmd == "bridge":
+            from .obsidian import export_vault, pull_vault, bridge_status
+            if args.action == "export":
+                return export_vault(st, args.vault, include_conversations=not args.no_conversations,
+                                    include_candidates=not args.no_candidates,
+                                    restore_missing=args.restore_missing)
+            if args.action == "pull":
+                return pull_vault(st, args.vault, apply=args.apply)
+            if args.action == "status":
+                return bridge_status(st, args.vault)
         if cmd == "doctor": return st.doctor()
         if cmd == "stats": return st.stats()
         if cmd == "search": return st.search(args.query, limit=args.limit, include_archived=args.archived)
@@ -208,6 +261,12 @@ def main(argv: list[str] | None = None) -> int:
         result = execute(args)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if args.command == "doctor" and not result["ok"]:
+            return 1
+        if args.command == "import-history" and (result.get("errors") or
+              any(f.get("conflicts") for f in result.get("file_results", []))):
+            return 1
+        if args.command == "bridge" and (result.get("conflicts") or result.get("missing") or
+              result.get("refresh", {}).get("conflicts")):
             return 1
         return 0
     except (VKFError, OSError, ValueError, UnicodeError) as exc:

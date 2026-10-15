@@ -17,7 +17,7 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 KINDS = {"knowledge", "idea", "understanding", "question", "cross_insight"}
 OBJECT_STATUSES = {"active", "challenged", "archived"}
 QUESTION_STATES = {"open", "exploring", "answered", "parked"}
@@ -32,7 +32,7 @@ TABLES_TO_EXPORT = (
     "import_batches", "conversations", "messages", "extraction_runs",
     "cognitive_objects", "model_calls", "candidates", "candidate_sources",
     "object_sources", "relations", "question_states", "object_versions",
-    "audit_events", "frontier_suggestions",
+    "audit_events", "frontier_suggestions", "conversation_origins", "message_import_metadata", "obsidian_bridge_state", "obsidian_readonly_state",
 )
 
 
@@ -154,6 +154,7 @@ class Storage:
             db.execute("PRAGMA busy_timeout=10000")
             version = db.execute("PRAGMA user_version").fetchone()[0]
             was_existing_v1 = version == 1
+            was_existing_v2 = version == 2
             if version == 0:
                 existing = db.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'").fetchall()
                 if existing:
@@ -162,7 +163,7 @@ class Storage:
                 version = 1
             if version == 1:
                 # Recheck required v1 tables before applying the migration.
-                for table in (*TABLES_TO_EXPORT, "object_fts"):
+                for table in (*TABLES_TO_EXPORT[:-4], "object_fts"):
                     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
                         raise UnsupportedSchema(f"version 1 database lacks required table {table}")
                 # Create a private online backup BEFORE modifying a version 1 DB.
@@ -176,6 +177,19 @@ class Storage:
                     pre_migration_backup = str(backup_path)
                 cls._apply_script(db, "002_guardrails.sql")
                 version = 2
+            if version == 2:
+                for table in (*TABLES_TO_EXPORT[:-4], "object_fts"):
+                    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                        raise UnsupportedSchema(f"version 2 database lacks required table {table}")
+                if not pre_migration_backup and was_existing_v2:
+                    backup_path = Path(path_str).with_name(Path(path_str).name + ".pre-v3." + uuid4().hex[:8] + ".db")
+                    fd = os.open(backup_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+                    os.close(fd)
+                    with closing(sqlite3.connect(backup_path)) as backup_db:
+                        db.backup(backup_db)
+                    pre_migration_backup = str(backup_path)
+                cls._apply_script(db, "003_bridge_import.sql")
+                version = 3
             if version != SCHEMA_VERSION:
                 raise UnsupportedSchema(f"schema version {version} is unsupported; expected {SCHEMA_VERSION}")
             db.execute("PRAGMA journal_mode=WAL") if not memory else None

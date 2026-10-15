@@ -1,0 +1,13 @@
+[
+  {
+    "id": "vkf-example-chatgpt-1",
+    "title": "KV Cache 与个人记忆",
+    "current_node": "assistant-final",
+    "mapping": {
+      "root": {"parent": null, "children": ["user-1"], "message": null},
+      "user-1": {"parent": "root", "children": ["assistant-draft", "assistant-final"], "message": {"author": {"role": "user"}, "content": {"parts": ["假设：长期记忆能否借鉴缓存策略？"]}}},
+      "assistant-draft": {"parent": "user-1", "children": [], "message": {"author": {"role": "assistant"}, "content": {"parts": ["这是被放弃的回答，不应导入。"]}}},
+      "assistant-final": {"parent": "user-1", "children": [], "message": {"author": {"role": "assistant"}, "content": {"parts": ["可以比较缓存的保存成本与命中收益，但需要明确差异。"]}}}
+    }
+  }
+]

@@ -1,0 +1,11 @@
+[
+  {
+    "uuid": "vkf-claude-1",
+    "name": "Understanding 的构成",
+    "chat_messages": [
+      {"sender": "human", "content": [{"type": "text", "text": "问题：总结与真正的理解之间有什么区别？"}]},
+      {"sender": "assistant", "content": [{"type": "text", "text": "理解应能说明机制、适用条件，并能应用到新例子。"}]},
+      {"sender": "human", "content": [{"type": "text", "text": "我的想法是将理解分为暂时解释和可迁移应用。"}]}
+    ]
+  }
+]
