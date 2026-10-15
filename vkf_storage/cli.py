@@ -31,6 +31,43 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     sub.add_parser("init", help="create or upgrade the database, without deleting data")
+    cf = sub.add_parser("config", help="persist vault and model settings per database (no API secrets)")
+    cfsub = cf.add_subparsers(dest="action",required=True)
+    cfsub.add_parser("show")
+    cs = cfsub.add_parser("set")
+    cs.add_argument("key", choices=["vault", "model", "api-base", "timeout", "extract", "compare"])
+    cs.add_argument("value")
+    cc = sub.add_parser("consolidate", help="compare incoming candidates with existing cognition")
+    csub = cc.add_subparsers(dest="action", required=True)
+    c = csub.add_parser("run", help="create non-destructive comparison proposals")
+    c.add_argument("--mode", choices=["heuristic", "llm"])
+    c.add_argument("--model"); c.add_argument("--api-base"); c.add_argument("--timeout", type=int)
+    c.add_argument("--limit",type=int,default=200)
+    c = csub.add_parser("list"); c.add_argument("--status", default="pending", choices=["pending","applied","dismissed","all"])
+    c.add_argument("--limit", type=int,default=100)
+    c = csub.add_parser("show"); c.add_argument("id")
+    c = csub.add_parser("suggest",help="manually label a candidate against a target")
+    c.add_argument("candidate_id"); c.add_argument("decision", choices=["SAME","REFINES","CONTRADICTS","RELATED","NEW","CROSS_DOMAIN","DISCARD"])
+    c.add_argument("--target"); c.add_argument("--reason",required=True)
+    c = csub.add_parser("decide",help="explicit human approval of a suggested comparison")
+    c.add_argument("id"); c.add_argument("action",choices=["accept","dismiss"])
+    c.add_argument("--reason",required=True); c.add_argument("--new-body-file",type=Path)
+    t = sub.add_parser("topic",help="browse provisional topic clusters")
+    tt = t.add_subparsers(dest="action",required=True)
+    s = tt.add_parser("list"); s.add_argument("--limit",type=int,default=100)
+    pl = sub.add_parser("pipeline",help="reprocess old conversations with v2 extractor then consolidate")
+    ps = pl.add_subparsers(dest="action",required=True)
+    p_run = ps.add_parser("run")
+    p_run.add_argument("--all",action="store_true",help="explicit confirmation to reprocess all imported conversations")
+    p_run.add_argument("--extract",choices=["none","heuristic","llm"])
+    p_run.add_argument("--compare",choices=["heuristic","llm"])
+    p_run.add_argument("--model");p_run.add_argument("--api-base");p_run.add_argument("--timeout",type=int)
+    p_run.add_argument("--limit",type=int,default=50)
+
+    ev = sub.add_parser('evaluate',help='score comparison reviews against your manually labelled pairs')
+    ev.add_argument('annotations',type=Path)
+    cv = sub.add_parser("coverage",help="audit lossless model extraction input coverage")
+    cv.add_argument("conversation_id")
     sub.add_parser("doctor", help="check SQLite and VKF logical integrity")
     sub.add_parser("stats", help="count stored records")
     s = sub.add_parser("search", help="literal title/body substring search")
@@ -108,6 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--limit", type=int, default=100)
     s = ca.add_parser("show"); s.add_argument("id")
     s = ca.add_parser("approve"); s.add_argument("id")
+    s.add_argument("--confirm-understanding", action="store_true", help="confirm this is your own understanding")
     s.add_argument("--source-id", action="append", default=[])
     s.add_argument("--synthesis-rationale")
     s = ca.add_parser("merge"); s.add_argument("id"); s.add_argument("target_id")
@@ -130,31 +168,32 @@ def build_parser() -> argparse.ArgumentParser:
     imp.add_argument("path", type=Path, help=".json/.md file or directory")
     imp.add_argument("--source", choices=["live", "chatgpt", "claude", "other"],
                      help="override source identification for all imported conversations")
-    imp.add_argument("--extract", default="heuristic", choices=["none", "heuristic", "llm"],
+    imp.add_argument("--extract", choices=["none", "heuristic", "llm"],
                      help="default offline literal candidates; model requests are explicit only")
     imp.add_argument("--model", help="required if --extract llm")
-    imp.add_argument("--api-base", default="https://api.openai.com/v1")
-    imp.add_argument("--timeout", type=int, default=60)
-    imp.add_argument("--vault", type=Path, help="export imported archive & candidate inbox into Obsidian vault")
+    imp.add_argument("--api-base")
+    imp.add_argument("--timeout", type=int)
+    imp.add_argument("--vault", type=Path, help="override saved vault")
+    imp.add_argument("--consolidate", action="store_true", help="create review proposals immediately after import")
 
     ext = sub.add_parser("extract", help="generate candidate inbox entries from an already imported chat")
     ext.add_argument("conversation_id")
-    ext.add_argument("--mode", default="heuristic", choices=["heuristic", "llm"])
+    ext.add_argument("--mode", choices=["heuristic", "llm"])
     ext.add_argument("--model")
-    ext.add_argument("--api-base", default="https://api.openai.com/v1")
-    ext.add_argument("--timeout", type=int, default=60)
+    ext.add_argument("--api-base")
+    ext.add_argument("--timeout", type=int)
 
     bridge = sub.add_parser("bridge", help="Obsidian Markdown projection + reviewed edits")
     bridges = bridge.add_subparsers(dest="action", required=True)
     s = bridges.add_parser("export", help="write a managed VKF/ folder in an Obsidian vault")
-    s.add_argument("vault", type=Path)
+    s.add_argument("vault", type=Path, nargs="?")
     s.add_argument("--restore-missing", action="store_true", help="recreate explicitly deleted managed notes")
     s.add_argument("--no-conversations", action="store_true")
     s.add_argument("--no-candidates", action="store_true")
     s = bridges.add_parser("status", help="review pending Obsidian edits without modifying SQLite")
-    s.add_argument("vault", type=Path)
+    s.add_argument("vault", type=Path, nargs="?")
     s = bridges.add_parser("pull", help="preview Obsidian edits, optionally apply them")
-    s.add_argument("vault", type=Path)
+    s.add_argument("vault", type=Path, nargs="?")
     s.add_argument("--apply", action="store_true", help="commit safe edits as new SQLite object revisions")
 
     s = sub.add_parser("backup"); s.add_argument("file", type=Path)
@@ -169,30 +208,94 @@ def execute(args: argparse.Namespace):
         return Storage.initialize(args.db)
     if args.command == "restore-db":
         return Storage.restore_backup(args.file, args.db)
+    from .settings import load_settings,save_setting
+    if args.command == 'config':
+        if args.action == 'show':
+            return {'path':str(Path(args.db).expanduser().resolve())+'.settings.json',
+                    'settings':load_settings(args.db),'api_key_saved':False,
+                    'api_key_present_in_environment':bool(__import__('os').environ.get('VKF_API_KEY'))}
+        if args.action == 'set':
+            return save_setting(args.db,args.key.replace('-','_'),args.value)
+    settings=load_settings(args.db)
+    model=lambda: (getattr(args,'model',None) or settings['model'])
+    api_base=lambda: (getattr(args,'api_base',None) or settings['api_base'])
+    timeout=lambda: (getattr(args,'timeout',None) or settings['timeout'])
+    vault=lambda: (getattr(args,'vault',None) or settings['vault'])
     with Storage(args.db) as st:
         cmd = args.command
         if cmd == "import-history":
             from .importers import import_history
             from .obsidian import export_vault
-            result = import_history(st, args.path, source=args.source, extract=args.extract,
-                                    model=args.model, api_base=args.api_base, timeout=args.timeout)
-            if args.vault is not None:
-                result["obsidian"] = export_vault(st, args.vault)
+            result = import_history(st, args.path, source=args.source,
+                                    extract=args.extract or settings['extract'],
+                                    model=model(), api_base=api_base(), timeout=timeout())
+            if args.consolidate:
+                from .consolidation import consolidate_pending
+                result['consolidation'] = consolidate_pending(st,mode=settings['compare'],
+                    model=model(),api_base=api_base(),timeout=timeout())
+            if vault():
+                result["obsidian"] = export_vault(st, vault())
             return result
         if cmd == "extract":
             from .importers import extract_conversation
-            return extract_conversation(st, args.conversation_id, mode=args.mode,
-                                        model=args.model, api_base=args.api_base, timeout=args.timeout)
+            return extract_conversation(st, args.conversation_id, mode=args.mode or
+                                        (settings['extract'] if settings['extract'] != 'none' else 'heuristic'),
+                                        model=model(), api_base=api_base(), timeout=timeout())
         if cmd == "bridge":
             from .obsidian import export_vault, pull_vault, bridge_status
+            if not vault():
+                raise InvalidInput('no vault path supplied; use config set vault PATH')
             if args.action == "export":
-                return export_vault(st, args.vault, include_conversations=not args.no_conversations,
+                return export_vault(st, vault(), include_conversations=not args.no_conversations,
                                     include_candidates=not args.no_candidates,
                                     restore_missing=args.restore_missing)
             if args.action == "pull":
-                return pull_vault(st, args.vault, apply=args.apply)
+                return pull_vault(st, vault(), apply=args.apply)
             if args.action == "status":
-                return bridge_status(st, args.vault)
+                return bridge_status(st, vault())
+        if cmd == 'consolidate':
+            from .consolidation import (consolidate_pending,list_reviews,get_review,
+                                        suggest_review,decide_review)
+            if args.action == 'run':
+                return consolidate_pending(st,mode=args.mode or settings['compare'],model=model(),
+                                           api_base=api_base(),timeout=timeout(),limit=args.limit)
+            if args.action == 'list': return list_reviews(st,status=args.status,limit=args.limit)
+            if args.action == 'show': return get_review(st,args.id)
+            if args.action == 'suggest': return suggest_review(st,args.candidate_id,
+                force_decision=args.decision,force_target=args.target,force_reason=args.reason)
+            if args.action == 'decide':
+                body=args.new_body_file.read_text(encoding='utf-8') if args.new_body_file else None
+                return decide_review(st,args.id,args.action,reason=args.reason,new_body=body)
+        if cmd == 'topic':
+            from .consolidation import list_topics
+            if args.action == 'list': return list_topics(st,limit=args.limit)
+        if cmd == 'pipeline':
+            from .importers import extract_conversation
+            from .consolidation import consolidate_pending
+            if not args.all:
+                raise InvalidInput('pipeline run requires --all to reprocess historical conversations')
+            conversations=st.list_conversations(limit=min(args.limit,1000))
+            reports=[]; errors=[]
+            for conv in reversed(conversations):
+                try:
+                    reports.append(extract_conversation(st,conv['id'],
+                        mode=args.extract or settings['extract'],model=model(),
+                        api_base=api_base(),timeout=timeout()))
+                except (VKFError,OSError,ValueError) as exc:
+                    errors.append({'conversation_id':conv['id'],'error':str(exc)})
+            comparisons=consolidate_pending(st,mode=args.compare or settings['compare'],
+                model=model(),api_base=api_base(),timeout=timeout(),limit=min(args.limit*20,1000))
+            if vault():
+                from .obsidian import export_vault
+                comparisons['obsidian']=export_vault(st,vault())
+            return {'conversations_processed':len(reports),'extractions':reports,
+                    'extraction_errors':errors,'consolidation':comparisons}
+        if cmd == 'evaluate':
+            from .evaluation import evaluate
+            return evaluate(st,args.annotations)
+        if cmd == 'coverage':
+            from .coverage import report_coverage
+            return report_coverage(st,args.conversation_id)
         if cmd == "doctor": return st.doctor()
         if cmd == "stats": return st.stats()
         if cmd == "search": return st.search(args.query, limit=args.limit, include_archived=args.archived)
@@ -240,7 +343,8 @@ def execute(args: argparse.Namespace):
             if a == "list": return st.list_candidates(state=None if args.state == "all" else args.state,
                                                         limit=args.limit)
             if a == "approve": return st.approve_candidate(args.id, synthesized_from=args.source_id,
-                                                            synthesis_rationale=args.synthesis_rationale)
+                                                            synthesis_rationale=args.synthesis_rationale,
+                                                            confirm_understanding=args.confirm_understanding)
             if a == "merge": return st.merge_candidate(args.id, args.target_id, reason=args.reason,
                                                         new_body=_read_body(args, "new_body"),
                                                         expected_revision=args.expected_revision)
@@ -264,6 +368,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if args.command == "import-history" and (result.get("errors") or
               any(f.get("conflicts") for f in result.get("file_results", []))):
+            return 1
+        if args.command == "pipeline" and result.get('extraction_errors'):
             return 1
         if args.command == "bridge" and (result.get("conflicts") or result.get("missing") or
               result.get("refresh", {}).get("conflicts")):

@@ -1,0 +1,13 @@
+# Local private VKF cognitive data: NEVER commit to Git.
+*.db
+*.db-*
+*.db.*
+*.settings.json
+*.sqlite
+*.sqlite3
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.vkf-test-output/
+# Optionally keep Obsidian Vault separate from this repository.

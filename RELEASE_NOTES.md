@@ -1,32 +1,16 @@
-# VKF Storage Core v0.1.2 · Windows UTF-8 test hotfix
+# v0.2.0 — Cognitive Consolidation
 
-- Fixed Python 3.12 on Chinese Windows: every test Markdown/SQL `Path.read_text()` and `Path.write_text()` call explicitly specifies `encoding="utf-8"`.
-- Added encoding portability tests for Chinese, emoji, and revisioned Obsidian bridge pull.
-- No SQLite schema change, no behavior change to production code. SQLite databases from v0.1.1 remain compatible.
-- Existing v0.1.1 test-only workaround: `python -X utf8 -m unittest discover -s tests -v`.
+- Schema v4 迁移，自动备份已有 schema v3；新增无损分块溯源、Topic、Review、Candidate Attribution 与 Canonical Equivalence 表。
+- `config set/show` 保存每数据库的 Vault、模型、API base、timeout 和默认处理模式；**不保存 API Key**。
+- `pipeline run --all` 重提炼已导入的对话，旧版记录不被自动删除。
+- 以字符偏移完整覆盖长消息，解决 v0.1.x 的长回复静默截断。
+- 检索旧 Candidate 和 Knowledge，创建 SAME/REFINES/RELATED/CONTRADICTS/NEW/CROSS_DOMAIN/DISCARD 建议。
+- 字面完全一致的 SAME 可以由规则发现；其他语义判断需要模型或人工审核。没有自动合并正式认知对象。
+- 审核后的候选来源可以归并，且 canonical 正式批准后同步标记重复候选。
+- Obsidian `VKF/01 - Consolidation.md`、`VKF/Consolidation/`、`VKF/Topics/` 与 `Consolidation Inbox.base`。
+- `coverage` 和 `evaluate` 支持字符级完整性、人工标注的误合并/召回等度量。
+- `candidate approve` 对 Understanding 新增显式用户确认要求。
 
----
+## 仍需进一步研发
 
-# VKF Storage Core v0.1.1 · 小版本更新
-
-## New
-
-- Obsidian Bridge：SQLite 正式认知对象 → 带 YAML Properties、Wiki Links、来源/关系说明的 Markdown。
-- Obsidian 受控回写：`bridge pull` 预览、`--apply` 按期望版本创建新 revision；元数据、关系、哈希冲突保护。
-- Conversation Archive & Candidate Inbox：本地 Vault 自动生成导航与只读归档；检测自动生成文件的外部改动，避免静默覆盖。
-- JSON + Markdown 历史：ChatGPT 原始 mapping/current_node、Claude 常见 chat_messages、规范化 JSON、常见角色标题 Markdown、递归目录。
-- Candidate-first 自动化：默认离线规则标注；可选 `--extract llm`，对 OpenAI-compatible API 以结构化候选形式提议，**不会自动批准**。
-- `conversation_origins` 用于外部 ID 冲突发现；`message_import_metadata` 保存可用的历史时间戳；`model_calls` 日志在 API 提炼模式记录调用状态。
-- Schema v3；为已有 v0.1.0 SQLite v2 自动备份并迁移。
-
-## Kept from v0.1.0
-
-认知对象五类型、七种关系、Question 状态机、Candidate 审核、SQLite 强约束、备份恢复、中文搜索及审计。既有 CLI 仍保留。
-
-## Known limits
-
-- 没有 Obsidian 插件或实时同步守护进程；Obsidian UI 集成是通过普通文件完成，未在真实安装的 Obsidian 内自动化点击测试。
-- 非文本/附件导入不是完整复刻，ChatGPT 仅保留当前分支。
-- 规则提炼是保守文本识别；LLM 提炼需要有效模型兼容接口、密钥与人工审核。无法保证语义去重和事实正确性。
-- SQLite 与文件系统写入非跨系统原子；崩溃/并发时需要重新扫描、恢复，推荐定期备份。
-- 文件名重命名/移动、图关系 GUI 编辑、自由 Markdown 同步、Candidate GUI 批量审批、自动生成 CrossInsight 尚未完成。
+语义检索 Embeddings、CrossInsight 自动合成、持续式知识演化、自动版本冲突协商、Obsidian GUI 审核按钮、完整多模态对话导入。请不要把本版的主题聚合看作已经证明了认知层面的理解。

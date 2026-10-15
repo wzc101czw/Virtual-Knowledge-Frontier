@@ -17,7 +17,7 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 KINDS = {"knowledge", "idea", "understanding", "question", "cross_insight"}
 OBJECT_STATUSES = {"active", "challenged", "archived"}
 QUESTION_STATES = {"open", "exploring", "answered", "parked"}
@@ -33,6 +33,7 @@ TABLES_TO_EXPORT = (
     "cognitive_objects", "model_calls", "candidates", "candidate_sources",
     "object_sources", "relations", "question_states", "object_versions",
     "audit_events", "frontier_suggestions", "conversation_origins", "message_import_metadata", "obsidian_bridge_state", "obsidian_readonly_state",
+    "extraction_segments", "candidate_attributions", "consolidation_reviews", "candidate_equivalences", "topics", "candidate_topics", "object_topics",
 )
 
 
@@ -120,6 +121,19 @@ class Storage:
             self.db.execute("PRAGMA foreign_keys=ON")
             self.db.execute("PRAGMA busy_timeout=10000")
             version = self.db.execute("PRAGMA user_version").fetchone()[0]
+            if version == 3:
+                for table in ("obsidian_bridge_state", "obsidian_readonly_state", "candidates", "object_fts"):
+                    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                        raise UnsupportedSchema(f"version 3 database lacks required table {table}")
+                if not pre_migration_backup and existing_version == 3:
+                    backup_path = Path(path_str).with_name(Path(path_str).name + ".pre-v4." + uuid4().hex[:8] + ".db")
+                    fd = os.open(backup_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+                    os.close(fd)
+                    with closing(sqlite3.connect(backup_path)) as backup_db:
+                        db.backup(backup_db)
+                    pre_migration_backup = str(backup_path)
+                cls._apply_script(db, "004_consolidation.sql")
+                version = 4
             if version != SCHEMA_VERSION:
                 raise UnsupportedSchema(
                     f"schema version {version} != {SCHEMA_VERSION}; run 'vkf init' to migrate (back up first)"
@@ -153,6 +167,7 @@ class Storage:
             db.execute("PRAGMA foreign_keys=ON")
             db.execute("PRAGMA busy_timeout=10000")
             version = db.execute("PRAGMA user_version").fetchone()[0]
+            existing_version = version
             was_existing_v1 = version == 1
             was_existing_v2 = version == 2
             if version == 0:
@@ -163,7 +178,7 @@ class Storage:
                 version = 1
             if version == 1:
                 # Recheck required v1 tables before applying the migration.
-                for table in (*TABLES_TO_EXPORT[:-4], "object_fts"):
+                for table in ("import_batches", "conversations", "messages", "extraction_runs", "cognitive_objects", "model_calls", "candidates", "candidate_sources", "object_sources", "relations", "question_states", "object_versions", "audit_events", "frontier_suggestions", "object_fts"):
                     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
                         raise UnsupportedSchema(f"version 1 database lacks required table {table}")
                 # Create a private online backup BEFORE modifying a version 1 DB.
@@ -178,7 +193,7 @@ class Storage:
                 cls._apply_script(db, "002_guardrails.sql")
                 version = 2
             if version == 2:
-                for table in (*TABLES_TO_EXPORT[:-4], "object_fts"):
+                for table in ("import_batches", "conversations", "messages", "extraction_runs", "cognitive_objects", "model_calls", "candidates", "candidate_sources", "object_sources", "relations", "question_states", "object_versions", "audit_events", "frontier_suggestions", "object_fts"):
                     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
                         raise UnsupportedSchema(f"version 2 database lacks required table {table}")
                 if not pre_migration_backup and was_existing_v2:
@@ -190,6 +205,19 @@ class Storage:
                     pre_migration_backup = str(backup_path)
                 cls._apply_script(db, "003_bridge_import.sql")
                 version = 3
+            if version == 3:
+                for table in ("obsidian_bridge_state", "obsidian_readonly_state", "candidates", "object_fts"):
+                    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                        raise UnsupportedSchema(f"version 3 database lacks required table {table}")
+                if not pre_migration_backup and existing_version == 3:
+                    backup_path = Path(path_str).with_name(Path(path_str).name + ".pre-v4." + uuid4().hex[:8] + ".db")
+                    fd = os.open(backup_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+                    os.close(fd)
+                    with closing(sqlite3.connect(backup_path)) as backup_db:
+                        db.backup(backup_db)
+                    pre_migration_backup = str(backup_path)
+                cls._apply_script(db, "004_consolidation.sql")
+                version = 4
             if version != SCHEMA_VERSION:
                 raise UnsupportedSchema(f"schema version {version} is unsupported; expected {SCHEMA_VERSION}")
             db.execute("PRAGMA journal_mode=WAL") if not memory else None
@@ -703,7 +731,12 @@ class Storage:
     def list_candidates(self, *, state: str | None = "pending", limit: int = 100) -> list[dict[str, Any]]:
         if state is not None:
             _choice(state, {"pending", "approved", "merged", "rejected"}, "candidate state")
-        sql = "SELECT * FROM candidates" + (" WHERE state=?" if state else "") + " ORDER BY created_at DESC,id LIMIT ?"
+        sql = "SELECT * FROM candidates"
+        if state == "pending":
+            sql += " WHERE state=? AND NOT EXISTS (SELECT 1 FROM candidate_equivalences ce WHERE ce.duplicate_candidate_id=candidates.id)"
+        elif state:
+            sql += " WHERE state=?"
+        sql += " ORDER BY created_at DESC,id LIMIT ?"
         args: tuple[Any, ...] = (state, _positive_limit(limit)) if state else (_positive_limit(limit),)
         return [dict(r) for r in self.db.execute(sql, args).fetchall()]
 
@@ -717,12 +750,17 @@ class Storage:
         cand = self._one("SELECT * FROM candidates WHERE id=?", (candidate_id,), name="candidate")
         if cand["state"] != "pending":
             raise Conflict(f"candidate already resolved: {cand['state']}")
+        if self.db.execute("SELECT 1 FROM candidate_equivalences WHERE duplicate_candidate_id=?", (candidate_id,)).fetchone():
+            raise Conflict("candidate is consolidated into another pending candidate; review its canonical candidate")
         return cand
 
     def approve_candidate(self, candidate_id: str, *, synthesized_from: list[str] | None = None,
-                          synthesis_rationale: str | None = None) -> dict[str, Any]:
+                          synthesis_rationale: str | None = None,
+                          confirm_understanding: bool = False) -> dict[str, Any]:
         with self.transaction():
             cand = self._pending_candidate_tx(candidate_id)
+            if cand['kind'] == 'understanding' and not confirm_understanding:
+                raise InvalidInput('understanding requires explicit user confirmation (--confirm-understanding); AI explanations do not establish user mastery')
             sources = self._validate_synthesis(cand["kind"], synthesized_from, synthesis_rationale)
             obj = self._create_object_tx(kind=cand["kind"], title=cand["title"], body=cand["body"],
                                          origin_actor="mixed", epistemic_status=None,
@@ -735,6 +773,12 @@ class Storage:
                 self._add_relation_tx(obj["id"], source, "synthesizes", synthesis_rationale or "", "mixed")
             self.db.execute("UPDATE candidates SET state='approved',resolved_object_id=? WHERE id=?",
                             (obj["id"], candidate_id))
+            # A confirmed canonical candidate resolves all reviewed equivalent aliases.
+            self.db.execute("""UPDATE candidates SET state='merged',resolved_object_id=? WHERE id IN
+                (SELECT duplicate_candidate_id FROM candidate_equivalences WHERE canonical_candidate_id=?)
+                AND state='pending'""", (obj['id'],candidate_id))
+            self.db.execute("""INSERT OR IGNORE INTO object_topics(object_id,topic_id)
+                SELECT ?,topic_id FROM candidate_topics WHERE candidate_id=?""",(obj['id'],candidate_id))
             self._audit("candidate", candidate_id, "approved", {"object_id": obj["id"]})
             return self.get_object(obj["id"])
 
@@ -757,6 +801,11 @@ class Storage:
                 (target_object_id, candidate_id))
             self.db.execute("UPDATE candidates SET state='merged',resolved_object_id=? WHERE id=?",
                             (target_object_id, candidate_id))
+            self.db.execute("""UPDATE candidates SET state='merged',resolved_object_id=? WHERE id IN
+                (SELECT duplicate_candidate_id FROM candidate_equivalences WHERE canonical_candidate_id=?)
+                AND state='pending'""", (target_object_id,candidate_id))
+            self.db.execute("""INSERT OR IGNORE INTO object_topics(object_id,topic_id)
+                SELECT ?,topic_id FROM candidate_topics WHERE candidate_id=?""",(target_object_id,candidate_id))
             self._audit("candidate", candidate_id, "merged", {"target_id": target_object_id,
                                                               "new_body": new_body is not None, "reason": reason})
             return self.get_object(target_object_id)

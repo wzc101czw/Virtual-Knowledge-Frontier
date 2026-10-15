@@ -222,8 +222,15 @@ def _other_exports(st: Storage, root: Path, key: str, path_map: dict[str, str], 
                  WHERE cs.candidate_id=? ORDER BY c.title,m.turn_index LIMIT 100""", (cand["id"],)).fetchall()
             source_notes = [f"- [[VKF/Conversations/{_slug(title)}--{cid[-10:]}|{title.replace('|','-')}]] · turn {turn + 1}"
                             for cid,title,turn in origins]
+            origin=st.db.execute("""SELECT er.model_id,er.prompt_version,
+                COALESCE(ca.source_actor,'unknown') FROM candidates c
+                JOIN extraction_runs er ON er.id=c.extraction_run_id
+                LEFT JOIN candidate_attributions ca ON ca.candidate_id=c.id
+                WHERE c.id=?""",(cand['id'],)).fetchone()
             text = "\n".join([generated.rstrip(), "---", f"vkf_candidate_id: {_q(cand['id'])}",
                               f"vkf_kind: {_q(cand['kind'])}", f"vkf_state: {_q(cand['state'])}",
+                              f"vkf_model: {_q(origin[0])}", f"vkf_prompt_version: {_q(origin[1])}",
+                              f"vkf_source_actor: {_q(origin[2])}",
                               "tags: [vkf, vkf/candidate]", "---", "", f"# {cand['title']}", "",
                               f"> **{cand['state']}** · 模型/规则建议。仅经人工批准后才成为正式知识。", "",
                               cand["body"], "", "## Source conversations", "", *source_notes,
@@ -232,7 +239,8 @@ def _other_exports(st: Storage, root: Path, key: str, path_map: dict[str, str], 
             try:
                 _generated_write(st, root, key, rel, text, generated)
                 summaries["candidates"] += 1
-                if cand["state"] == "pending":
+                if cand["state"] == "pending" and not st.db.execute(
+                    "SELECT 1 FROM candidate_equivalences WHERE duplicate_candidate_id=?",(cand['id'],)).fetchone():
                     candidate_links.append((cand["title"], rel))
             except (OSError, Conflict) as exc:
                 summaries["warnings"].append({"file": rel, "reason": str(exc)})
@@ -289,6 +297,7 @@ views:
              "- [[VKF/VKF Objects.base|All Cognitive Objects]]",
              "- [[VKF/Open Questions.base|Open Questions]]",
              "- [[VKF/Candidate Inbox.base|Candidate Inbox]]",
+             "- [[VKF/01 - Consolidation|Consolidation & Topics]]",
              "", "## Pending Candidate Inbox", ""]
     for title, rel in candidate_links:
         lines.append(f"- [[{rel[:-3]}|{title.replace('|','-')}]]")
@@ -356,6 +365,8 @@ def export_vault(st: Storage, vault: str | Path, *, include_conversations: bool 
             report["conflicts"].append({"id": oid, "file": rel, "reason": str(exc)})
     report["read_only"] = _other_exports(st, root, key, paths, include_conversations=include_conversations,
                                          include_candidates=include_candidates)
+    from .obsidian_reviews import export_consolidation_views
+    report['consolidation'] = export_consolidation_views(st,root,key,paths)
     return report
 
 

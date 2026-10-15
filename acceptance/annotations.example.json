@@ -1,0 +1,10 @@
+{
+  "pairs": [
+    {"new": "cand_NEWER_ID", "target": "cand_OLDER_ID", "same": true},
+    {"new": "cand_DIFFERENT_ID", "target": "cand_RELATED_ID", "same": false}
+  ],
+  "noise": [
+    {"candidate_id": "cand_DELIVERY_LOG", "low_value": true}
+  ],
+  "conversations": ["conv_REAL_CONVERSATION_ID"]
+}
