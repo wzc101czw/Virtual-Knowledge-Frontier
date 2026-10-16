@@ -347,7 +347,7 @@ not a real role
             db.execute("INSERT INTO conversations(id,source,title) VALUES('legacy','other','old data')")
             db.commit()
         migrated = Storage.initialize(p)
-        self.assertEqual(migrated["schema_version"], 5)
+        self.assertEqual(migrated["schema_version"], 6)
         self.assertIn(".pre-v3.", migrated["pre_migration_backup"])
         with closing(sqlite3.connect(migrated["pre_migration_backup"])) as old:
             self.assertEqual(old.execute("PRAGMA user_version").fetchone()[0], 2)

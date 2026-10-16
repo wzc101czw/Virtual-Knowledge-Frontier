@@ -1,4 +1,4 @@
-# VKF v0.2.3 — Provenance-aware Consolidation
+# VKF v0.2.4 — Resilient Model Gateway + Data Lifecycle
 
 本地知识边界引擎：SQLite 保管正式认知与事务，Obsidian Vault 为可读/可编辑的 Markdown 投影，模型用于提炼和比较，**不会自动将建议认定为用户理解或直接合并正式知识**。
 
@@ -20,7 +20,7 @@ python -m vkf_storage --db "D:\VKFData\vkf.db" init
 python -m vkf_storage --db "D:\VKFData\vkf.db" doctor
 ```
 
-当前 Schema 为 **v5**。从 v0.2.2（v4）升级时，`init` 会先创建 `vkf.db.pre-v5.<随机>.db` 备份。更早版本将逐级升级，并在首次版本迁移之前备份。原数据和设置保留；切勿在重要数据库上跳过手动备份。**切勿在尚有重要数据时删除旧 DB 再初始化**。
+当前 Schema 为 **v6**。从 v0.2.3（v5）升级时，`init` 会先创建 `vkf.db.pre-v6.<随机>.db` 备份。更早版本将逐级升级，并在首次版本迁移之前备份。原数据和设置保留；切勿在重要数据库上跳过手动备份。**切勿在尚有重要数据时删除旧 DB 再初始化**。
 
 ## 2. 第一次配置关联 Obsidian 与模型
 
@@ -69,6 +69,31 @@ python -m vkf_storage --db $DB pipeline run --all --extract llm --compare llm --
 ```
 
 `pipeline run --all` 是专门用于已有历史重提炼的命令。由于 v0.2 使用全新 Prompt / chunk 指纹，会创建新的候选而不修改旧候选；巩固层应帮助你处理这种重复，而不是静默消除历史。每条对话单次完整 LLM 提炼最多 80 个 chunk，请关注费用与 API 速率限制。
+
+## v0.2.4 更新：数据生命周期 + 模型容错
+
+针对实际日志中的两类失败，新增**有限 HTTP 上游重试**（默认可额外重试 1 次）以及**无效 JSON 的一次安全重提示**。提供 `VKF_CHAT_JSON_MODE=json_schema`，但仅推荐用于明确支持 Chat Completions Structured Outputs 的服务。原始对话不会因为服务端 502 或模型返回格式错误而丢失；没有完成 JSON 解析，不会入库伪造的候选。
+
+```powershell
+# 使用合成对话的提炼和比较探针（可能产生少量 API 费用）
+python -m vkf_storage --db $DB model-probe --task extract
+python -m vkf_storage --db $DB model-probe --task compare
+
+# 仅清除某场旧提炼，原始消息保留（必须先预览并使用当次令牌）
+python -m vkf_storage --db $DB lifecycle plan --scope extraction --conversation-id CONV_ID
+python -m vkf_storage --db $DB lifecycle apply --scope extraction --conversation-id CONV_ID --confirm TOKEN
+
+# 或者完全重做认知层，保留所有原始对话
+python -m vkf_storage --db $DB lifecycle plan --scope derived
+python -m vkf_storage --db $DB lifecycle apply --scope derived --confirm TOKEN
+
+# 最后把数据库已退休且未编辑的托管 Obsidian 文件移到 Vault 外备份
+python -m vkf_storage --db $DB lifecycle vault-prune
+python -m vkf_storage --db $DB lifecycle vault-prune --apply --confirm VAULT_PRUNE_TOKEN
+python -m vkf_storage --db $DB bridge export
+```
+
+还可使用 `lifecycle --scope conversation --conversation-id CONV_ID` 删除一场原始对话，或 `--scope all` 在备份后清空整个当前数据库（配置和归档记录仍保留）。**所有清理命令都必须先预览、确认，并自动产生数据库备份。** 不会强删用户修改过的 Obsidian 文件。详见 [LIFECYCLE_GUIDE.md](LIFECYCLE_GUIDE.md)，此文档包含范围对照表、恢复数据库的步骤、错误排查和验收清单。
 
 ## v0.2.3 更新：区分「内部论证关系」与「跨对话知识巩固」
 

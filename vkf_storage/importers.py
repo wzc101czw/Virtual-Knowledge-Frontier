@@ -15,6 +15,7 @@ import re
 from typing import Any
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
+import time
 
 from .core import Storage, InvalidInput, NotFound, Conflict, VKFError, _digest, _id
 
@@ -572,8 +573,75 @@ The global consolidation step will compare against other conversations later.
 """
 
 
-def request_model_json(system: str, text: str, model: str, api_base: str, timeout: int,
-                       *, max_tokens: int = 2300) -> dict[str, Any]:
+class ModelInvalidJSON(VKFError):
+    """The provider accepted our request but its assistant text is not JSON."""
+
+
+# Optional: strict Structured Outputs for providers that truly support the
+# Chat Completions JSON Schema parameter. JSON object mode remains default.
+_MODEL_SCHEMAS = {
+    'extraction': {
+        'type': 'object', 'additionalProperties': False,
+        'properties': {'candidates': {'type': 'array', 'items': {
+            'type': 'object', 'additionalProperties': False,
+            'properties': {
+                'kind': {'type': 'string', 'enum': ['knowledge','idea','understanding','question']},
+                'title': {'type': 'string'}, 'body': {'type': 'string'},
+                'source_turns': {'type': 'array', 'items': {'type': 'integer'}}},
+            'required': ['kind','title','body','source_turns']}}},
+        'required': ['candidates']},
+    'comparison': {
+        'type': 'object', 'additionalProperties': False,
+        'properties': {'decision': {'type': 'string', 'enum':
+            ['SAME','REFINES','CONTRADICTS','RELATED','NEW','CROSS_DOMAIN','DISCARD']},
+            'target_id': {'type': ['string', 'null']},
+            'rationale': {'type': 'string'}},
+        'required': ['decision','target_id','rationale']},
+    'probe': {
+        'type': 'object', 'additionalProperties': False,
+        'properties': {'ok': {'type': 'boolean'}, 'probe': {'type': 'string'}},
+        'required': ['ok','probe']}
+}
+
+
+def _retry_count(name: str, default: int, upper: int) -> int:
+    value = os.environ.get(name, str(default))
+    try:
+        count = int(value)
+    except ValueError as exc:
+        raise InvalidInput(f'{name} must be an integer 0..{upper}') from exc
+    if not 0 <= count <= upper:
+        raise InvalidInput(f'{name} must be an integer 0..{upper}')
+    return count
+
+
+def _safe_request_id(value: str) -> str:
+    value = str(value or '')[:100]
+    return value if value and re.fullmatch(r'[A-Za-z0-9_.:-]+', value) else 'unknown'
+
+
+def _retry_delay(headers: Any, attempt: int) -> float | None:
+    """Honor bounded Retry-After; return None if server asks to wait longer."""
+    raw = headers.get('Retry-After') if headers else None
+    if raw:
+        try:
+            wait = max(0., float(raw))
+        except (ValueError, TypeError):
+            from datetime import datetime, timezone
+            from email.utils import parsedate_to_datetime
+            try:
+                date = parsedate_to_datetime(str(raw))
+                wait = max(0., (date - datetime.now(timezone.utc)).total_seconds())
+            except (ValueError, TypeError, OverflowError):
+                wait = None
+        if wait is not None:
+            return wait if wait <= 6 else None
+    import random
+    return min(6., 0.4 * (2 ** attempt) + random.uniform(0, 0.2))
+
+
+def _request_once(system: str, text: str, model: str, api_base: str, timeout: int,
+                       *, max_tokens: int = 2300, task: str = 'generic') -> dict[str, Any]:
     """Call a compatible Chat Completions endpoint and diagnose each failure stage.
 
     Privacy: never include the prompt, model output, bearer token, or raw HTTP body
@@ -583,7 +651,9 @@ def request_model_json(system: str, text: str, model: str, api_base: str, timeou
     VKF_CHAT_TOKEN_FIELD=max_completion_tokens
     VKF_CHAT_MAX_OUTPUT_TOKENS=4096
     VKF_CHAT_OMIT_TEMPERATURE=1
-    VKF_CHAT_JSON_MODE=json_object  # default; set to none for incompatible providers
+    VKF_CHAT_JSON_MODE=json_object  # default; json_schema for supported providers
+    VKF_CHAT_HTTP_RETRIES=1          # transient upstream HTTP failures only
+    VKF_CHAT_JSON_RETRIES=1          # one bounded reprompt for malformed JSON
     """
     from urllib.parse import urlsplit
 
@@ -615,8 +685,8 @@ def request_model_json(system: str, text: str, model: str, api_base: str, timeou
     if omit_temperature not in {'', '0', '1'}:
         raise InvalidInput('VKF_CHAT_OMIT_TEMPERATURE must be 0 or 1')
     json_mode = os.environ.get('VKF_CHAT_JSON_MODE', 'json_object')
-    if json_mode not in {'none', 'json_object'}:
-        raise InvalidInput('VKF_CHAT_JSON_MODE must be none or json_object')
+    if json_mode not in {'none', 'json_object', 'json_schema'}:
+        raise InvalidInput('VKF_CHAT_JSON_MODE must be none, json_object or json_schema')
 
     request_data: dict[str, Any] = {
         'model': model,
@@ -628,36 +698,58 @@ def request_model_json(system: str, text: str, model: str, api_base: str, timeou
         request_data['temperature'] = 0
     if json_mode == 'json_object':
         request_data['response_format'] = {'type': 'json_object'}
+    elif json_mode == 'json_schema':
+        schema = _MODEL_SCHEMAS.get(task)
+        if schema is None:
+            raise InvalidInput('strict JSON schema requires task=extraction, comparison or probe')
+        request_data['response_format'] = {
+            'type': 'json_schema',
+            'json_schema': {'name': 'vkf_' + task, 'strict': True, 'schema': schema}}
+
     payload = json.dumps(request_data, ensure_ascii=False).encode('utf-8')
     req = Request(url + '/chat/completions', payload,
                   headers={'Content-Type': 'application/json',
                            'Authorization': 'Bearer ' + (key or 'local')},
                   method='POST')
 
-    try:
-        with urlopen(req, timeout=timeout) as resp:
-            raw = resp.read(2_000_001)
-            headers = getattr(resp, 'headers', None)
-            status = getattr(resp, 'status', None)
-    except HTTPError as exc:
-        # The provider's message might quote the user's private prompt. Surface
-        # structured error metadata only, not the entire provider error body.
-        info = ''
+    raw = b''
+    headers = None
+    status = None
+    http_retries = _retry_count('VKF_CHAT_HTTP_RETRIES', 1, 3)
+    for attempt in range(http_retries + 1):
         try:
-            issue = json.loads(exc.read(8192).decode('utf-8'))
-            if isinstance(issue, dict) and isinstance(issue.get('error'), dict):
-                error = issue['error']
-                fields = [(name, error.get(name)) for name in ('type', 'code', 'param')]
-                info = ' ' + ', '.join(f'{k}={v}' for k, v in fields
-                                         if isinstance(v, (str, int)) and len(str(v)) <= 100)
-        except (UnicodeError, json.JSONDecodeError, OSError):
-            pass
-        rid = exc.headers.get('x-request-id', '') if exc.headers else ''
-        raise VKFError(f'HTTP stage: status={exc.code};{info}; request_id={rid or "unknown"}; '
-                       'check API endpoint and supported request parameters') from exc
-    except (URLError, TimeoutError, OSError) as exc:
-        raise VKFError(f'transport stage: {type(exc).__name__}; '
-                       'check endpoint, TLS/network and configured timeout') from exc
+            with urlopen(req, timeout=timeout) as resp:
+                raw = resp.read(2_000_001)
+                headers = getattr(resp, 'headers', None)
+                status = getattr(resp, 'status', None)
+            break
+        except HTTPError as exc:
+            # Only transient HTTP statuses are retried. Never retry 400/401/403.
+            if exc.code in (429, 500, 502, 503, 504) and attempt < http_retries:
+                wait = _retry_delay(exc.headers, attempt)
+                if wait is not None:
+                    time.sleep(wait)
+                    continue
+            # Do not print untrusted provider message bodies or private prompts.
+            info = ''
+            try:
+                issue = json.loads(exc.read(8192).decode('utf-8'))
+                if isinstance(issue, dict) and isinstance(issue.get('error'), dict):
+                    problem = issue['error']
+                    fields = [(name, problem.get(name)) for name in ('type', 'code', 'param')]
+                    info = ' ' + ', '.join(f'{k}={v}' for k, v in fields
+                                             if isinstance(v, (str, int)) and len(str(v)) <= 100)
+            except (UnicodeError, json.JSONDecodeError, OSError):
+                pass
+            rid = exc.headers.get('x-request-id', '') if exc.headers else ''
+            rid = _safe_request_id(rid)
+            raise VKFError(f'HTTP stage: status={exc.code};{info}; request_id={rid}; '
+                           f'attempts={attempt + 1}; check provider availability and request parameters') from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            # Transport timeouts may already have been processed/billed upstream;
+            # don't silently issue an additional request.
+            raise VKFError(f'transport stage: {type(exc).__name__}; '
+                           'check endpoint, TLS/network and configured timeout') from exc
 
     ctype = headers.get('content-type', 'unknown') if headers else 'unknown'
     rid = headers.get('x-request-id', 'unknown') if headers else 'unknown'
@@ -711,7 +803,7 @@ def request_model_json(system: str, text: str, model: str, api_base: str, timeou
     try:
         value = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        raise VKFError(f'model output stage: message.content is not valid JSON '
+        raise ModelInvalidJSON(f'model output stage: message.content is not valid JSON '
                        f'(length={len(answer)}, json_error={exc.msg}, line={exc.lineno}, column={exc.colno}, 'f'{completion_meta}; {meta}); '
                        'use structured JSON mode if supported, or inspect provider format') from exc
     if not isinstance(value, dict):
@@ -720,8 +812,36 @@ def request_model_json(system: str, text: str, model: str, api_base: str, timeou
     return value
 
 
+def request_model_json(system: str, text: str, model: str, api_base: str, timeout: int,
+                       *, max_tokens: int = 2300, task: str = 'generic') -> dict[str, Any]:
+    """Request JSON, retry eligible upstream failures and one malformed response.
+
+    Malformed JSON repair resends the SAME original input with strengthened JSON
+    constraints; it never tries to extract arbitrary JSON from untrusted prose.
+    This may incur one additional model call; set VKF_CHAT_JSON_RETRIES=0 to disable.
+    """
+    json_retries = _retry_count('VKF_CHAT_JSON_RETRIES', 1, 1)
+    for attempt in range(json_retries + 1):
+        strengthened = system
+        if attempt:
+            strengthened += ('\nIMPORTANT RETRY: Your previous completion was not syntactically valid JSON. '
+                             'Return ONE complete JSON object only; no commentary, code fences or Markdown. '
+                             'Preserve the original claims and source indices. '
+                             'Return {"candidates":[]} if there is no extractable knowledge '
+                             'in an extraction task.')
+        try:
+            return _request_once(strengthened, text, model, api_base, timeout,
+                                 max_tokens=max_tokens, task=task)
+        except ModelInvalidJSON as exc:
+            if attempt >= json_retries:
+                raise VKFError(f'{exc}; json_attempts={attempt + 1}') from exc
+    raise AssertionError('unreachable')
+
+
+
+
 def _llm_suggestions(text: str, model: str, api_base: str, timeout: int) -> list[dict[str, Any]]:
-    proposals=request_model_json(_SYSTEM,text,model,api_base,timeout).get('candidates')
+    proposals=request_model_json(_SYSTEM,text,model,api_base,timeout,task='extraction').get('candidates')
     if not isinstance(proposals,list):
         raise VKFError('model did not return candidates as JSON array')
     return proposals

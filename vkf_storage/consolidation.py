@@ -164,7 +164,7 @@ def _model_compare(st: Storage, candidate: dict, options: list[dict], *, model: 
                              input_fingerprint=hashlib.sha256(query.encode('utf-8')).hexdigest())
     try:
         # Completion tokens include hidden reasoning tokens in the Chat Completions API.
-        result = request_model_json(prompt, query, model, api_base, timeout, max_tokens=2048)
+        result = request_model_json(prompt, query, model, api_base, timeout, max_tokens=2048, task='comparison')
     except Exception as exc:
         st.finish_model_call(call['id'], success=False, error_message=str(exc)[:1000])
         raise

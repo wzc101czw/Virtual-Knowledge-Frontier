@@ -1,3 +1,14 @@
+## v0.2.4 — Model API resilience & lifecycle operations
+
+- SQLite Schema v6：加入有来源信息的 `lifecycle_events` 和 Obsidian 托管文件归档清单 `lifecycle_retired_files`；原 v5 数据库迁移前自动备份。
+- 四种预览式数据清理：`extraction`、`conversation`、`derived`、`all`；确认令牌绑定受影响 ID 与内容，真正应用前自动备份并在单事务内执行，Doctor 验证在提交前完成。
+- 删除某场对话若会破坏已批准知识的来源则拒绝；相关 Review、Candidate Link、Topic 依赖同步处理。
+- `lifecycle vault-prune` 只在用户确认后将指纹一致的旧托管笔记**移出 Vault**，保留旁路文件备份；人工编辑与符号链接一律拒绝自动移动。
+- 对上游 429/500/502/503/504 提供有限退避重试；400/401/403 不重试，网络超时不盲目重试；对无效 JSON 再次请求一次更严格结构化输出。
+- 可选 `VKF_CHAT_JSON_MODE=json_schema`、`model-probe --task extract`；仅适用于兼容 Chat Completions 的服务，第三方服务可能不支持。
+- 不强制合并或批准认知，不改变 `SAME`/`REFINES` 的语义；保留 v0.2.3 的跨对话范围与临时候选关系。
+- 本版没有调用真实 GPT6-Astra API，也不保证第三方服务完全遵守 JSON Mode；重试会带来额外 API 费用。
+
 ## v0.2.3 — Provenance-aware Consolidation & Candidate Links
 
 - SQLite Schema v5（旧数据库先备份）：新增 `candidate_links`、`consolidation_reviews.comparison_scope`、`effect`；历史已接受的 Review 以 `legacy_unknown` 标明作用未知。

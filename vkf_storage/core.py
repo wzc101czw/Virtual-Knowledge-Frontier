@@ -17,7 +17,7 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 KINDS = {"knowledge", "idea", "understanding", "question", "cross_insight"}
 OBJECT_STATUSES = {"active", "challenged", "archived"}
 QUESTION_STATES = {"open", "exploring", "answered", "parked"}
@@ -34,7 +34,7 @@ TABLES_TO_EXPORT = (
     "object_sources", "relations", "question_states", "object_versions",
     "audit_events", "frontier_suggestions", "conversation_origins", "message_import_metadata", "obsidian_bridge_state", "obsidian_readonly_state",
     "extraction_segments", "candidate_attributions", "consolidation_reviews", "candidate_equivalences", "topics", "candidate_topics", "object_topics", "candidate_links",
-)
+    "lifecycle_events", "lifecycle_retired_files")
 
 
 class VKFError(Exception):
@@ -218,6 +218,19 @@ class Storage:
                     pre_migration_backup = str(backup_path)
                 cls._apply_script(db, '005_provenance_links.sql')
                 version = 5
+            if version == 5:
+                for table in ('candidate_links','consolidation_reviews','obsidian_bridge_state'):
+                    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                        raise UnsupportedSchema(f'version 5 database lacks required table {table}')
+                if not pre_migration_backup and existing_version == 5:
+                    backup_path = Path(path_str).with_name(Path(path_str).name + '.pre-v6.' + uuid4().hex[:8] + '.db')
+                    fd = os.open(backup_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+                    os.close(fd)
+                    with closing(sqlite3.connect(backup_path)) as backup_db:
+                        db.backup(backup_db)
+                    pre_migration_backup = str(backup_path)
+                cls._apply_script(db, '006_lifecycle.sql')
+                version = 6
             if version != SCHEMA_VERSION:
                 raise UnsupportedSchema(f"schema version {version} is unsupported; expected {SCHEMA_VERSION}")
             db.execute("PRAGMA journal_mode=WAL") if not memory else None

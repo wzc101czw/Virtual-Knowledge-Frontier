@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--api-base")
     probe.add_argument("--timeout", type=int)
     probe.add_argument("--max-tokens", type=int, default=2048)
-    probe.add_argument("--task", choices=["basic", "compare"], default="basic",
+    probe.add_argument("--task", choices=["basic", "compare", "extract"], default="basic",
                        help="compare uses the real comparison prompt on synthetic examples")
     cf = sub.add_parser("config", help="persist vault and model settings per database (no API secrets)")
     cfsub = cf.add_subparsers(dest="action",required=True)
@@ -44,6 +44,19 @@ def build_parser() -> argparse.ArgumentParser:
     cs = cfsub.add_parser("set")
     cs.add_argument("key", choices=["vault", "model", "api-base", "timeout", "extract", "compare"])
     cs.add_argument("value")
+    lc = sub.add_parser('lifecycle', help='preview and safely purge incorrect VKF history')
+    lsub = lc.add_subparsers(dest='action', required=True)
+    lp = lsub.add_parser('plan', help='read-only affected-record counts and confirmation token')
+    lp.add_argument('--scope', choices=['derived','extraction','conversation','all'], required=True)
+    lp.add_argument('--conversation-id')
+    la = lsub.add_parser('apply', help='verified SQLite backup then atomic purge')
+    la.add_argument('--scope', choices=['derived','extraction','conversation','all'], required=True)
+    la.add_argument('--conversation-id')
+    la.add_argument('--confirm', required=True, help='token returned by lifecycle plan')
+    lv = lsub.add_parser('vault-prune', help='archive fingerprint-matching retired notes outside Obsidian')
+    lv.add_argument('--vault', type=Path)
+    lv.add_argument('--apply', action='store_true')
+    lv.add_argument('--confirm', help='token returned by lifecycle vault-prune preview')
     cc = sub.add_parser("consolidate", help="compare incoming candidates with existing cognition")
     csub = cc.add_subparsers(dest="action", required=True)
     c = csub.add_parser("run", help="create non-destructive comparison proposals")
@@ -247,7 +260,7 @@ def execute(args: argparse.Namespace):
                   'title':'缓存降低重复计算成本',
                   'body':'缓存可降低重复计算，但增加了存储和一致性管理成本。'}])
             result = request_model_json(system, query, model(), api_base(), timeout(),
-                                        max_tokens=args.max_tokens)
+                                        max_tokens=args.max_tokens, task='comparison')
             if result.get('decision') not in DECISIONS:
                 raise InvalidInput('comparison probe: invalid decision')
             target = result.get('target_id')
@@ -261,9 +274,21 @@ def execute(args: argparse.Namespace):
                 raise InvalidInput('comparison probe: missing rationale')
             return {'ok': True, 'task': 'compare', 'decision': result['decision'],
                     'model': model(), 'note': 'Synthetic comparison only; no VKF knowledge sent.'}
+        if args.task == 'extract':
+            from .importers import _SYSTEM, _llm_suggestions
+            # Synthetic text uses the real extraction prompt and returns counts,
+            # never customer data or candidate texts.
+            text = '0 | user: 我猜想缓存可以复用计算，但需要考虑失效条件。\n1 | assistant: 可将其作为待验证的研究假说。'
+            extracted = request_model_json(_SYSTEM, text, model(), api_base(), timeout(),
+                                           max_tokens=args.max_tokens, task='extraction')
+            candidates = extracted.get('candidates')
+            if not isinstance(candidates, list):
+                raise InvalidInput('extraction probe: expected candidates array')
+            return {'ok': True, 'task': 'extract', 'candidates_count': len(candidates),
+                    'model': model(), 'note': 'Synthetic text only; no private VKF knowledge sent.'}
         result = request_model_json('Reply with a JSON object only; keys: ok and probe.',
             'Return exactly this JSON object: {"ok":true,"probe":"vkf"}',
-            model(), api_base(), timeout(), max_tokens=args.max_tokens)
+            model(), api_base(), timeout(), max_tokens=args.max_tokens, task='probe')
         return {'ok': result.get('ok') is True, 'task': 'basic', 'model': model(),
                 'response_keys': sorted(result.keys()),
                 'note': 'Probe sends a small test prompt; no private VKF knowledge was sent.'}
@@ -299,6 +324,17 @@ def execute(args: argparse.Namespace):
                 return pull_vault(st, vault(), apply=args.apply)
             if args.action == "status":
                 return bridge_status(st, vault())
+        if cmd == 'lifecycle':
+            from .lifecycle import plan, apply, vault_prune
+            if args.action == 'plan':
+                return plan(st, args.scope, args.conversation_id)
+            if args.action == 'apply':
+                return apply(st, args.scope, conversation_id=args.conversation_id,
+                             confirm=args.confirm)
+            if args.action == 'vault-prune':
+                if not vault():
+                    raise InvalidInput('no vault path configured; use config set vault PATH')
+                return vault_prune(st, vault(), apply_changes=args.apply, confirm=args.confirm)
         if cmd == 'consolidate':
             from .consolidation import (consolidate_pending,list_reviews,get_review,
                                         suggest_review,decide_review,list_candidate_links)
