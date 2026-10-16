@@ -1,3 +1,25 @@
+## v0.2.3 — Provenance-aware Consolidation & Candidate Links
+
+- SQLite Schema v5（旧数据库先备份）：新增 `candidate_links`、`consolidation_reviews.comparison_scope`、`effect`；历史已接受的 Review 以 `legacy_unknown` 标明作用未知。
+- 去除同场对话来源带来的相似度人为加分；显式标注 same/cross/mixed/none/unknown 来源范围。
+- 对 `Question → Idea` 等跨认知类型的 LLM `REFINES` 提议保守降级为 `RELATED`，避免把新追问误记成命题修订。
+- `consolidate run --scope cross|within|all` 区分跨对话巩固和对话内部展开。新提议按 scope/算法签名保持幂等，作用已确定的旧 Review 不会自动重复执行。
+- 人工接受 REFINES/RELATED 时，写入**待正式化**的 candidate_links，不再仅设置 Review 的 applied 标记；未批准的认知仍不进入正式图谱。
+- Obsidian 的 Candidate、Topic、Consolidation 页面呈现审核过的临时关系、比较范围及实际写入效果；补齐 .base 写入异常路径定位。
+- `consolidate links` 查看临时关系；NEW 审阅仍需另外批准 Candidate。
+- 修复 Storage.__init__ 中意外残留的 v3 升级分支，使旧数据库必须通过显式 init 迁移。
+- 未包含远程模型服务测试、不保证自动 SAME 或跨学科语义召回；当前检索仍基于词汇。
+
+## v0.2.2 — Model comparison JSON reliability
+
+- Fixes invalid JSON example embedded in the Cognitive Consolidation comparison prompt.
+- Enlarges the default comparison completion budget from 500 to 2048 tokens, including reasoning.
+- New `model-probe --task compare` uses the actual comparison prompt with synthetic content (no private Vault data).
+- A single model response format failure is reported against one candidate instead of aborting the entire `consolidate run` batch.
+- JSON parse errors now include safe line/column metadata; model content and API tokens are never printed.
+- `VKF_CHAT_JSON_MODE=json_object` is now the default; set `VKF_CHAT_JSON_MODE=none` for providers that reject it.
+- No database migration, no automatic consolidation or approval.
+
 ## v0.2.1 — Model API diagnostic hotfix
 
 - Distinguishes transport, HTTP body, API schema, and model output JSON errors.

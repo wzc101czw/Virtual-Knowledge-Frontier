@@ -1,4 +1,4 @@
-# VKF v0.2.0 — Cognitive Consolidation
+# VKF v0.2.3 — Provenance-aware Consolidation
 
 本地知识边界引擎：SQLite 保管正式认知与事务，Obsidian Vault 为可读/可编辑的 Markdown 投影，模型用于提炼和比较，**不会自动将建议认定为用户理解或直接合并正式知识**。
 
@@ -20,7 +20,7 @@ python -m vkf_storage --db "D:\VKFData\vkf.db" init
 python -m vkf_storage --db "D:\VKFData\vkf.db" doctor
 ```
 
-从 v0.1.2 的 schema v3 升级为 schema v4；对已有 DB 会先自动生成 `vkf.db.pre-v4.<随机>.db` 私有备份。原数据保留。**切勿在尚有重要数据时删除旧 DB 再初始化**。
+当前 Schema 为 **v5**。从 v0.2.2（v4）升级时，`init` 会先创建 `vkf.db.pre-v5.<随机>.db` 备份。更早版本将逐级升级，并在首次版本迁移之前备份。原数据和设置保留；切勿在重要数据库上跳过手动备份。**切勿在尚有重要数据时删除旧 DB 再初始化**。
 
 ## 2. 第一次配置关联 Obsidian 与模型
 
@@ -69,6 +69,45 @@ python -m vkf_storage --db $DB pipeline run --all --extract llm --compare llm --
 ```
 
 `pipeline run --all` 是专门用于已有历史重提炼的命令。由于 v0.2 使用全新 Prompt / chunk 指纹，会创建新的候选而不修改旧候选；巩固层应帮助你处理这种重复，而不是静默消除历史。每条对话单次完整 LLM 提炼最多 80 个 chunk，请关注费用与 API 速率限制。
+
+## v0.2.3 更新：区分「内部论证关系」与「跨对话知识巩固」
+
+> **对实际日志的判断**：一场对话提取 7 个 Candidate，出现 4 条 REFINES、2 条 RELATED、1 条 NEW，并不表示发生了跨对话去重。旧版的来源上下文会人为提高同场对话候选的检索分数；v0.2.3 删除了这一加分，改为报告 `comparison_scope`。
+
+```powershell
+# 第一次使用新版源码时必须迁移数据库，自动生成 pre-v5 备份
+python -m vkf_storage --db $DB init
+python -m vkf_storage --db $DB doctor
+
+# 只比较来自其他历史对话的可检索旧认知，不处理同一来源对话的局部展开
+python -m vkf_storage --db $DB consolidate run --scope cross --mode llm --limit 15
+
+# 查看待确认建议（comparison_scope：跨对话 / 同一对话 / 来源混合 / 无匹配）
+python -m vkf_storage --db $DB consolidate list
+
+# 对需要保留的 REFINES/RELATED 进行人工接受（仍不是正式知识）
+python -m vkf_storage --db $DB consolidate decide REVIEW_ID accept --reason "独立观点但存在细化关系"
+
+# 查看已经确认的候选间关系，刷新 Obsidian 中的可点击关系
+python -m vkf_storage --db $DB consolidate links
+python -m vkf_storage --db $DB bridge export
+```
+
+`--scope` 取值：`all`（默认，既考虑同场对话，也考虑跨对话）、`cross`（不共享原始对话的对象；排除未知来源）、`within`（共享原始对话的对象）。若对象从多场对话汇合，可能显示 `mixed`；它在 cross 和 within 查询中均可见。
+
+**新的审核写入语义：**
+
+- 接受 `SAME`：记录 canonical 同一性 / 归并来源；不删除原始对话。
+- 接受 `REFINES` / `RELATED`，目标为 Candidate：写入 `candidate_links` 临时关系，并在候选和主题的 Markdown 投影中创建链接；**不修改正式图谱**。
+- 接受 `REFINES`，目标为正式知识，且显式传入人工撰写 `--new-body-file`：执行带版本的正式修订。若没有该文件，则只保存待验证关系。
+- 接受 `NEW`：只记录已审阅，不意味着候选自动成为用户认可的知识。
+- `consolidate list/show` 中的 `effect` 表示实际写入动作：`provisional_relation`、`equivalence`、`formal_revision`、`acknowledged_only` 等。由旧版本接受的建议会标记为 `legacy_unknown`，不可据此推断已写入正式关系。
+
+对于跨类型建议，例如 `Question → Idea`，模型即使返回 `REFINES`，系统也会保守降级为 `RELATED` 并标注原因；强制手动指定跨类型 `REFINES` 会被拒绝。Question 发起对 Idea 的追问，通常不意味着它已证明或修订了该观点。后续将设计显式 `raises`/`investigates` 问题关系。
+
+`score` 仍只是词汇/标题相似度，不是概率，也不是语义证明。当前检索仍是轻量级词汇检索且存在数量上限：`NEW` 只能表示在**当前候选集合与检索阈值**下没有找到合适目标，不能证明整个 Vault 中没有相同观点。真正跨领域的关联仍需要后续 Embedding / 全局召回机制与人工评估。
+
+升级后第一次按新策略运行时，**尚未审核的旧 Review 可能被新的 Review 取代并标记为 dismissed**（原始历史不会删除）；已接受的旧 Review 不会被重新自动提交。建议先备份数据库，用 `--limit 15` 观察变化，再扩大范围。无须重新提炼对话。
 
 ## 4. 认知巩固：检索、比较、人工审核
 
@@ -208,3 +247,33 @@ token budget only if needed; usage and costs may rise. Never paste your API key
 or unredacted private conversations into bug reports. To diagnose a failure,
 share the command (without key), model ID, the API base hostname (if public),
 `finish_reason`, response shape, HTTP status, and token counts.
+
+
+### v0.2.2: Complex comparison API output format troubleshooting
+
+The basic `model-probe` checks simple JSON; realistic comparison can fail despite that.
+Run the synthetic comparison probe (no personal content is sent):
+
+```powershell
+$env:VKF_CHAT_JSON_MODE = "json_object"
+$env:VKF_CHAT_MAX_OUTPUT_TOKENS = "2048"
+$env:VKF_CHAT_TOKEN_FIELD = "max_completion_tokens"
+$env:VKF_CHAT_OMIT_TEMPERATURE = "1"
+python -m vkf_storage --db $DB model-probe --task compare
+```
+
+JSON mode is enabled by default in v0.2.2; set `$env:VKF_CHAT_JSON_MODE = "none"` if an older provider rejects it. If your provider does not support one of these settings, follow the reported HTTP
+parameter error and disable that knob. On the actual knowledge base, run
+`consolidate run --mode llm --limit 2` initially, review the returned `errors`
+field, and only then increase batch size. The comparison probe uses synthetic
+content, but real consolidation sends candidate text to your API provider.
+The v0.2.2 runner does not automatically retry failed paid model calls.
+
+
+### v0.2.2: failure behavior
+
+A malformed response in one candidate comparison now appears in the `errors`
+array with that candidate ID instead of stopping the entire batch. It is not
+silently retried, merged, or approved. Check `model_calls` and the CLI diagnostic
+for the response stage. Run `consolidate run --mode llm --limit 2` after a successful
+`model-probe --task compare`, and then review new suggestions.

@@ -17,7 +17,7 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 KINDS = {"knowledge", "idea", "understanding", "question", "cross_insight"}
 OBJECT_STATUSES = {"active", "challenged", "archived"}
 QUESTION_STATES = {"open", "exploring", "answered", "parked"}
@@ -33,7 +33,7 @@ TABLES_TO_EXPORT = (
     "cognitive_objects", "model_calls", "candidates", "candidate_sources",
     "object_sources", "relations", "question_states", "object_versions",
     "audit_events", "frontier_suggestions", "conversation_origins", "message_import_metadata", "obsidian_bridge_state", "obsidian_readonly_state",
-    "extraction_segments", "candidate_attributions", "consolidation_reviews", "candidate_equivalences", "topics", "candidate_topics", "object_topics",
+    "extraction_segments", "candidate_attributions", "consolidation_reviews", "candidate_equivalences", "topics", "candidate_topics", "object_topics", "candidate_links",
 )
 
 
@@ -121,19 +121,6 @@ class Storage:
             self.db.execute("PRAGMA foreign_keys=ON")
             self.db.execute("PRAGMA busy_timeout=10000")
             version = self.db.execute("PRAGMA user_version").fetchone()[0]
-            if version == 3:
-                for table in ("obsidian_bridge_state", "obsidian_readonly_state", "candidates", "object_fts"):
-                    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
-                        raise UnsupportedSchema(f"version 3 database lacks required table {table}")
-                if not pre_migration_backup and existing_version == 3:
-                    backup_path = Path(path_str).with_name(Path(path_str).name + ".pre-v4." + uuid4().hex[:8] + ".db")
-                    fd = os.open(backup_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
-                    os.close(fd)
-                    with closing(sqlite3.connect(backup_path)) as backup_db:
-                        db.backup(backup_db)
-                    pre_migration_backup = str(backup_path)
-                cls._apply_script(db, "004_consolidation.sql")
-                version = 4
             if version != SCHEMA_VERSION:
                 raise UnsupportedSchema(
                     f"schema version {version} != {SCHEMA_VERSION}; run 'vkf init' to migrate (back up first)"
@@ -218,6 +205,19 @@ class Storage:
                     pre_migration_backup = str(backup_path)
                 cls._apply_script(db, "004_consolidation.sql")
                 version = 4
+            if version == 4:
+                for table in ('consolidation_reviews', 'candidate_equivalences', 'topics', 'candidate_sources'):
+                    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                        raise UnsupportedSchema(f"version 4 database lacks required table {table}")
+                if not pre_migration_backup and existing_version == 4:
+                    backup_path = Path(path_str).with_name(Path(path_str).name + '.pre-v5.' + uuid4().hex[:8] + '.db')
+                    fd = os.open(backup_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+                    os.close(fd)
+                    with closing(sqlite3.connect(backup_path)) as backup_db:
+                        db.backup(backup_db)
+                    pre_migration_backup = str(backup_path)
+                cls._apply_script(db, '005_provenance_links.sql')
+                version = 5
             if version != SCHEMA_VERSION:
                 raise UnsupportedSchema(f"schema version {version} is unsupported; expected {SCHEMA_VERSION}")
             db.execute("PRAGMA journal_mode=WAL") if not memory else None

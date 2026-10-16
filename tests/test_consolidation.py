@@ -69,7 +69,7 @@ class ConsolidationTests(unittest.TestCase):
         db.execute('PRAGMA user_version=3')
         db.commit();db.close()
         result=Storage.initialize(self.path)
-        self.assertEqual(result['schema_version'],4)
+        self.assertEqual(result['schema_version'],5)
         backup=Path(result['pre_migration_backup'])
         self.assertTrue(backup.is_file())
         with sqlite3.connect(backup) as connection:

@@ -583,7 +583,7 @@ def request_model_json(system: str, text: str, model: str, api_base: str, timeou
     VKF_CHAT_TOKEN_FIELD=max_completion_tokens
     VKF_CHAT_MAX_OUTPUT_TOKENS=4096
     VKF_CHAT_OMIT_TEMPERATURE=1
-    VKF_CHAT_JSON_MODE=json_object
+    VKF_CHAT_JSON_MODE=json_object  # default; set to none for incompatible providers
     """
     from urllib.parse import urlsplit
 
@@ -614,7 +614,7 @@ def request_model_json(system: str, text: str, model: str, api_base: str, timeou
     omit_temperature = os.environ.get('VKF_CHAT_OMIT_TEMPERATURE', '')
     if omit_temperature not in {'', '0', '1'}:
         raise InvalidInput('VKF_CHAT_OMIT_TEMPERATURE must be 0 or 1')
-    json_mode = os.environ.get('VKF_CHAT_JSON_MODE', 'none')
+    json_mode = os.environ.get('VKF_CHAT_JSON_MODE', 'json_object')
     if json_mode not in {'none', 'json_object'}:
         raise InvalidInput('VKF_CHAT_JSON_MODE must be none or json_object')
 
@@ -712,7 +712,7 @@ def request_model_json(system: str, text: str, model: str, api_base: str, timeou
         value = json.loads(cleaned)
     except json.JSONDecodeError as exc:
         raise VKFError(f'model output stage: message.content is not valid JSON '
-                       f'(length={len(answer)}, {completion_meta}; {meta}); '
+                       f'(length={len(answer)}, json_error={exc.msg}, line={exc.lineno}, column={exc.colno}, 'f'{completion_meta}; {meta}); '
                        'use structured JSON mode if supported, or inspect provider format') from exc
     if not isinstance(value, dict):
         raise VKFError(f'model output stage: expected JSON object, got {type(value).__name__} '

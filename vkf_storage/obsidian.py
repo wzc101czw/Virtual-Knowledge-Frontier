@@ -236,6 +236,20 @@ def _other_exports(st: Storage, root: Path, key: str, path_map: dict[str, str], 
                               cand["body"], "", "## Source conversations", "", *source_notes,
                               "", "---", "",
                               f"CLI: `candidate show {cand['id']}` / `candidate approve {cand['id']}`", ""])
+            links = st.db.execute('''SELECT kind,to_candidate_id,to_object_id FROM candidate_links
+               WHERE from_candidate_id=? ORDER BY created_at,id''',(cand['id'],)).fetchall()
+            if links:
+                lines = ["", "## Reviewed provisional relations (not formal knowledge)", ""]
+                for kind,to_candidate_id,to_object_id in links:
+                    if to_candidate_id:
+                        target=st.get_candidate(to_candidate_id)
+                        ref=(f"[[VKF/Candidates/{_slug(target['title'])}--{target['id'][-10:]}|"
+                             f"{target['title'].replace('|','-')}]]")
+                    else:
+                        target=st.get_object(to_object_id)
+                        ref=_link(target,path_map[to_object_id]) if to_object_id in path_map else to_object_id
+                    lines.append(f"- `{kind}` → {ref}")
+                text += "\n".join(lines) + "\n"
             try:
                 _generated_write(st, root, key, rel, text, generated)
                 summaries["candidates"] += 1

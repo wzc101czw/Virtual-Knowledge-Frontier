@@ -35,7 +35,9 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--model")
     probe.add_argument("--api-base")
     probe.add_argument("--timeout", type=int)
-    probe.add_argument("--max-tokens", type=int, default=2000)
+    probe.add_argument("--max-tokens", type=int, default=2048)
+    probe.add_argument("--task", choices=["basic", "compare"], default="basic",
+                       help="compare uses the real comparison prompt on synthetic examples")
     cf = sub.add_parser("config", help="persist vault and model settings per database (no API secrets)")
     cfsub = cf.add_subparsers(dest="action",required=True)
     cfsub.add_parser("show")
@@ -48,12 +50,17 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--mode", choices=["heuristic", "llm"])
     c.add_argument("--model"); c.add_argument("--api-base"); c.add_argument("--timeout", type=int)
     c.add_argument("--limit",type=int,default=200)
+    c.add_argument("--scope", choices=["all","cross","within"], default="all",
+                   help="cross compares distinct source conversations; within inspects one conversation")
+    c = csub.add_parser("links",help="human-confirmed provisional candidate links, not formal knowledge")
+    c.add_argument("--candidate-id"); c.add_argument("--limit",type=int,default=100)
     c = csub.add_parser("list"); c.add_argument("--status", default="pending", choices=["pending","applied","dismissed","all"])
     c.add_argument("--limit", type=int,default=100)
     c = csub.add_parser("show"); c.add_argument("id")
     c = csub.add_parser("suggest",help="manually label a candidate against a target")
     c.add_argument("candidate_id"); c.add_argument("decision", choices=["SAME","REFINES","CONTRADICTS","RELATED","NEW","CROSS_DOMAIN","DISCARD"])
     c.add_argument("--target"); c.add_argument("--reason",required=True)
+    c.add_argument("--scope",choices=["all","cross","within"],default="all")
     c = csub.add_parser("decide",help="explicit human approval of a suggested comparison")
     c.add_argument("id"); c.add_argument("action",choices=["accept","dismiss"])
     c.add_argument("--reason",required=True); c.add_argument("--new-body-file",type=Path)
@@ -68,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--compare",choices=["heuristic","llm"])
     p_run.add_argument("--model");p_run.add_argument("--api-base");p_run.add_argument("--timeout",type=int)
     p_run.add_argument("--limit",type=int,default=50)
+    p_run.add_argument("--scope",choices=["all","cross","within"],default="all")
 
     ev = sub.add_parser('evaluate',help='score comparison reviews against your manually labelled pairs')
     ev.add_argument('annotations',type=Path)
@@ -230,10 +238,33 @@ def execute(args: argparse.Namespace):
         from .importers import request_model_json
         if not model():
             raise InvalidInput('configure a model first: config set model MODEL_ID')
+        if args.task == "compare":
+            from .consolidation import _comparison_prompt_and_input, DECISIONS
+            system, query = _comparison_prompt_and_input(
+                {'kind':'idea', 'title':'KV 缓存可以复用计算结果',
+                 'body':'通过缓存降低重复计算，但需要失效条件。'},
+                [{'target_id':'synthetic-previous', 'kind':'idea',
+                  'title':'缓存降低重复计算成本',
+                  'body':'缓存可降低重复计算，但增加了存储和一致性管理成本。'}])
+            result = request_model_json(system, query, model(), api_base(), timeout(),
+                                        max_tokens=args.max_tokens)
+            if result.get('decision') not in DECISIONS:
+                raise InvalidInput('comparison probe: invalid decision')
+            target = result.get('target_id')
+            if target not in (None, 'synthetic-previous'):
+                raise InvalidInput('comparison probe: unknown target_id')
+            if result['decision'] in ('NEW', 'DISCARD') and target is not None:
+                raise InvalidInput('comparison probe: NEW/DISCARD must use null target_id')
+            if result['decision'] not in ('NEW', 'DISCARD') and target is None:
+                raise InvalidInput('comparison probe: relation decision requires target_id')
+            if not isinstance(result.get('rationale'), str) or not result['rationale'].strip():
+                raise InvalidInput('comparison probe: missing rationale')
+            return {'ok': True, 'task': 'compare', 'decision': result['decision'],
+                    'model': model(), 'note': 'Synthetic comparison only; no VKF knowledge sent.'}
         result = request_model_json('Reply with a JSON object only; keys: ok and probe.',
             'Return exactly this JSON object: {"ok":true,"probe":"vkf"}',
             model(), api_base(), timeout(), max_tokens=args.max_tokens)
-        return {'ok': result.get('ok') is True, 'model': model(),
+        return {'ok': result.get('ok') is True, 'task': 'basic', 'model': model(),
                 'response_keys': sorted(result.keys()),
                 'note': 'Probe sends a small test prompt; no private VKF knowledge was sent.'}
     with Storage(args.db) as st:
@@ -270,14 +301,16 @@ def execute(args: argparse.Namespace):
                 return bridge_status(st, vault())
         if cmd == 'consolidate':
             from .consolidation import (consolidate_pending,list_reviews,get_review,
-                                        suggest_review,decide_review)
+                                        suggest_review,decide_review,list_candidate_links)
             if args.action == 'run':
                 return consolidate_pending(st,mode=args.mode or settings['compare'],model=model(),
-                                           api_base=api_base(),timeout=timeout(),limit=args.limit)
+                                           api_base=api_base(),timeout=timeout(),limit=args.limit,scope=args.scope)
+            if args.action == 'links': return list_candidate_links(st,candidate_id=args.candidate_id,limit=args.limit)
             if args.action == 'list': return list_reviews(st,status=args.status,limit=args.limit)
             if args.action == 'show': return get_review(st,args.id)
             if args.action == 'suggest': return suggest_review(st,args.candidate_id,
-                force_decision=args.decision,force_target=args.target,force_reason=args.reason)
+                force_decision=args.decision,force_target=args.target,force_reason=args.reason,
+                scope=args.scope)
             if args.action == 'decide':
                 body=args.new_body_file.read_text(encoding='utf-8') if args.new_body_file else None
                 return decide_review(st,args.id,args.action,reason=args.reason,new_body=body)
@@ -299,7 +332,7 @@ def execute(args: argparse.Namespace):
                 except (VKFError,OSError,ValueError) as exc:
                     errors.append({'conversation_id':conv['id'],'error':str(exc)})
             comparisons=consolidate_pending(st,mode=args.compare or settings['compare'],
-                model=model(),api_base=api_base(),timeout=timeout(),limit=min(args.limit*20,1000))
+                model=model(),api_base=api_base(),timeout=timeout(),limit=min(args.limit*20,1000),scope=args.scope)
             if vault():
                 from .obsidian import export_vault
                 comparisons['obsidian']=export_vault(st,vault())
