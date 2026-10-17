@@ -13,7 +13,7 @@ import copy
 from typing import Any
 
 from .core import Storage, InvalidInput, VKFError, _digest
-from .importers import _full_chunks
+from .importers import _full_chunks, ModelInvalidJSON
 from .research_gateway import call as model_call
 from .research import save_map, validate_plan
 from . import research_checkpoints as checkpoints
@@ -197,6 +197,129 @@ def _fragment_query(chunk: str, segments: list[tuple[str,int,int]]) -> str:
     return 'Evidence segment IDs (valid ONLY for this chunk):\n'+labelled+'\n\n'+chunk
 
 
+def _split_parent_segments(messages: list[dict], segments: list[tuple[str,int,int]],
+                           *, budget: int) -> list[tuple[str,list[tuple[str,int,int]]]]:
+    """Split a failed fragment further while keeping ORIGINAL message offsets.
+
+    The input segments already cover exactly one ordinary research-map fragment.
+    Output spans must cover those input segments once, in the same order.
+    """
+    by_id = {m['id']: m for m in messages}
+    result: list[tuple[str,list[tuple[str,int,int]]]] = []
+    text_parts: list[str] = []
+    spans: list[tuple[str,int,int]] = []
+    used = 0
+    def flush() -> None:
+        nonlocal text_parts, spans, used
+        if text_parts:
+            result.append(('\n'.join(text_parts), spans))
+        text_parts, spans, used = [], [], 0
+    for mid, start, end in segments:
+        m = by_id[mid]
+        pos = start
+        while pos < end:
+            label = f"[turn {m['turn_index']}, {m['role']}, offset {pos}]\n"
+            available = budget - used - len(label) - 2
+            if available <= 0:
+                flush()
+                available = budget - len(label) - 2
+            if available < 1:
+                raise InvalidInput('recovery split budget too small for message metadata')
+            until = min(end, pos + available)
+            if until < end and until - pos > 200:
+                cut = m['content'].rfind('\n', pos + (until-pos)//2, until)
+                if cut > pos:
+                    until = cut + 1
+            assert pos < until <= end
+            text_parts.append(label + m['content'][pos:until])
+            spans.append((mid,pos,until))
+            used += len(label) + (until-pos) + 1
+            pos = until
+            if used >= budget - 100:
+                flush()
+    flush()
+    assert [entry for _, part_spans in result for entry in part_spans]
+    # Ensure no source characters are lost, repeated or silently shifted.
+    parent_by_mid = {}
+    for mid,a,b in segments:
+        parent_by_mid.setdefault(mid,[]).append((a,b))
+    child_by_mid = {}
+    for _,subs in result:
+        for mid,a,b in subs:
+            child_by_mid.setdefault(mid,[]).append((a,b))
+    for mid, original in parent_by_mid.items():
+        expect = []
+        for a,b in original:
+            expect.extend(range(a,b))
+        actual = []
+        for a,b in child_by_mid.get(mid,[]):
+            actual.extend(range(a,b))
+        if expect != actual:
+            raise AssertionError('recovery split lost or duplicated source characters')
+    return result
+
+
+def _split_units(conversation_id:str, messages:list[dict], parent_segments:list[tuple[str,int,int]],
+                 original_char_budget:int, *, model:str, api_base:str) -> list[dict]:
+    size = max(1000, min(6500, original_char_budget//2))
+    pieces = _split_parent_segments(messages,parent_segments,budget=size)
+    if len(pieces)<2:
+        return []
+    if len(pieces)>12:
+        raise InvalidInput('failed research fragment would require over 12 recovery subfragments')
+    units=[]
+    for index,(chunk,segments) in enumerate(pieces):
+        query=_fragment_query(chunk, segments)
+        key=checkpoints.key_for(conversation_id=conversation_id,stage='fragment_split',model=model,
+            api_base=api_base,system=MAPPING_PROMPT,query=query,max_tokens=6000)
+        units.append(dict(query=query,segments=segments,key=key,index=index))
+    return units
+
+
+def _recover_fragment(st:Storage, *, conversation_id:str, messages:list[dict],
+                      parent_index:int, parent_total:int, units:list[dict], model:str,
+                      api_base:str, timeout:int, progress:bool) -> tuple[dict,list[str]]:
+    """One bounded recovery level; persist each successful child independently."""
+    all_keys=[u['key'] for u in units]
+    locals=[]
+    for unit in units:
+        number=unit['index']+1
+        cached=checkpoints.get(st,key=unit['key'],conversation_id=conversation_id)
+        if cached is None:
+            if progress:
+                print(f'[VKF] fragment {parent_index+1}/{parent_total}: recovery subfragment '
+                      f'{number}/{len(units)} calling model',file=sys.stderr,flush=True)
+            try:
+                raw=model_call(st,system=MAPPING_PROMPT,query=unit['query'],model=model,
+                    api_base=api_base,timeout=timeout,max_tokens=6000,
+                    task='research_fragment',conversation_id=conversation_id)
+                # Unique namespace for child view/context keys; does not change original source IDs.
+                local=validate_plan(st,conversation_id,_local_result(
+                    raw,unit['segments'],1000*(parent_index+1)+number))
+            except (VKFError,TimeoutError) as exc:
+                completed=sum(checkpoints.get(st,key=u['key'],conversation_id=conversation_id)
+                              is not None for u in units)
+                raise VKFError(
+                    f'research map failed at fragment {parent_index+1}/{parent_total}, '
+                    f'recovery subfragment {number}/{len(units)}; '
+                    f'completed_recovery_checkpoints={completed}; '
+                    f'rerun with the same --split-fragment N or --split-on-json-error to reuse children. Cause: {exc}') from exc
+            checkpoints.put(st,key=unit['key'],conversation_id=conversation_id,
+                stage='fragment',model=model,chunk_index=number-1,
+                chunks_total=len(units),result=local)
+            if progress:
+                print(f'[VKF] recovery subfragment {number}/{len(units)}: saved checkpoint',
+                      file=sys.stderr,flush=True)
+        else:
+            local=validate_plan(st,conversation_id,cached)
+            if progress:
+                print(f'[VKF] recovery subfragment {number}/{len(units)}: restored checkpoint',
+                      file=sys.stderr,flush=True)
+        locals.append(local)
+    combined=_combine(locals)
+    return validate_plan(st,conversation_id,combined),all_keys
+
+
 def checkpoint_progress(st:Storage,conversation_id:str,*,model:str,api_base:str,chunk_chars:int=13000)->dict:
     """Read-only progress report without prompts, conversation texts or secrets."""
     conversation=st.get_conversation(conversation_id)
@@ -218,8 +341,20 @@ def checkpoint_progress(st:Storage,conversation_id:str,*,model:str,api_base:str,
         global_key=checkpoints.key_for(conversation_id=conversation_id,stage='global',
             model=model,api_base=api_base,system=GLOBAL_PROMPT,query=query,max_tokens=4000)
         global_cached=checkpoints.get(st,key=global_key,conversation_id=conversation_id) is not None
+    partial=[]
+    for index,(_,_,chunk,segments) in enumerate(pieces):
+        if (index+1) in completed:
+            continue
+        units=_split_units(conversation_id,conversation['messages'],segments,len(chunk),
+                           model=model,api_base=api_base)
+        subdone=[u['index']+1 for u in units if
+                 checkpoints.get(st,key=u['key'],conversation_id=conversation_id) is not None]
+        if subdone:
+            partial.append({'fragment_number':index+1,'completed_subfragments':subdone,
+                            'total_subfragments':len(units)})
     return {'conversation_id':conversation_id,'total_fragments':len(pieces),
             'completed_fragment_numbers':completed,
+            'partial_recovery_fragments':partial,
             'remaining_fragments':len(pieces)-len(completed),
             'global_checkpoint_present':global_cached,
             'note':'Only source-and-configuration-matching fragments count as completed; '
@@ -229,12 +364,16 @@ def checkpoint_progress(st:Storage,conversation_id:str,*,model:str,api_base:str,
 def map_conversation(st:Storage,conversation_id:str,*,mode:str='heuristic',model:str|None=None,
                      api_base:str='https://api.openai.com/v1',timeout:int=60,
                      target_space_id:str|None=None,progress:bool=False,restart:bool=False,
-                     chunk_chars:int=13000)->dict:
+                     chunk_chars:int=13000,split_on_invalid_json:bool=False,
+                     force_split_fragments:tuple[int,...]=())->dict:
     conversation=st.get_conversation(conversation_id)
     messages=conversation['messages']
     if not messages:raise InvalidInput('cannot map an empty conversation')
     pieces=_full_chunks(messages,budget=chunk_chars)  # complete character-span coverage
     if len(pieces)>80:raise InvalidInput('more than 80 research mapping chunks; split input first')
+    if force_split_fragments and (mode!='llm' or any(type(number) is not int or
+            not 1<=number<=len(pieces) for number in force_split_fragments)):
+        raise InvalidInput('--split-fragment must select an existing 1-based LLM fragment number')
     fingerprint=_digest(['research-map-v1',conversation_id,[(m['id'],m['content']) for m in messages]])
     modelname=model or ''
     prior=st.db.execute('''SELECT id FROM research_maps WHERE conversation_id=? AND target_space_id IS ?
@@ -264,18 +403,53 @@ def map_conversation(st:Storage,conversation_id:str,*,mode:str='heuristic',model
                 if progress: print(f'[VKF] research fragment {chunk_index+1}/{total}: restored checkpoint',
                                    file=sys.stderr,flush=True)
             else:
-                if progress: print(f'[VKF] research fragment {chunk_index+1}/{total}: calling model '
-                                   f'(timeout={timeout}s)',file=sys.stderr,flush=True)
+                forced=(chunk_index+1 in force_split_fragments)
+                units = (_split_units(conversation_id,messages,segments,len(chunk),
+                        model=model,api_base=api_base) if (split_on_invalid_json or forced) else [])
+                if forced and not units:
+                    raise InvalidInput('selected fragment is too small to split further')
+                # If a previous recovery subfragment was saved, do not repeat the
+                # original full-size failed call (which might already be billed).
+                has_partial=bool(units) and any(checkpoints.get(st,key=u['key'],
+                    conversation_id=conversation_id) is not None for u in units)
                 try:
-                    raw=model_call(st,system=MAPPING_PROMPT,query=query,model=model,
-                        api_base=api_base,timeout=timeout,max_tokens=6000,
-                        task='research_fragment',conversation_id=conversation_id)
+                    if has_partial or forced:
+                        if progress:
+                            reason='resuming partial recovery' if has_partial else 'forced smaller subfragments'
+                            print(f'[VKF] fragment {chunk_index+1}/{total}: {reason}',
+                                  file=sys.stderr,flush=True)
+                        local,child_keys=_recover_fragment(st,conversation_id=conversation_id,
+                            messages=messages,parent_index=chunk_index,parent_total=total,
+                            units=units,model=model,api_base=api_base,timeout=timeout,
+                            progress=progress)
+                        used_keys.extend(child_keys)
+                    else:
+                        if progress: print(f'[VKF] research fragment {chunk_index+1}/{total}: calling model '
+                                           f'(timeout={timeout}s)',file=sys.stderr,flush=True)
+                        try:
+                            raw=model_call(st,system=MAPPING_PROMPT,query=query,model=model,
+                                api_base=api_base,timeout=timeout,max_tokens=6000,
+                                task='research_fragment',conversation_id=conversation_id)
+                        except ModelInvalidJSON:
+                            if not units:
+                                raise
+                            if progress:
+                                print(f'[VKF] fragment {chunk_index+1}/{total}: invalid JSON; '
+                                      f'trying {len(units)} bounded recovery subfragments',
+                                      file=sys.stderr,flush=True)
+                            local,child_keys=_recover_fragment(st,conversation_id=conversation_id,
+                                messages=messages,parent_index=chunk_index,parent_total=total,
+                                units=units,model=model,api_base=api_base,timeout=timeout,
+                                progress=progress)
+                            used_keys.extend(child_keys)
+                        else:
+                            local=validate_plan(st,conversation_id,
+                                                _local_result(raw,segments,chunk_index))
                 except (VKFError,TimeoutError) as exc:
                     raise VKFError(f'research map failed at fragment {chunk_index+1}/{total}; '
                         f'completed_checkpoints={cached_count}; stored completed fragments will '
-                        f'be reused on rerun; increase --timeout or config set '
-                        f'research-timeout if appropriate. Cause: {exc}') from exc
-                local=validate_plan(st,conversation_id,_local_result(raw,segments,chunk_index))
+                        f'be reused on rerun. '
+                        f'Cause: {exc}') from exc
                 checkpoints.put(st,key=key,conversation_id=conversation_id,
                     stage='fragment',model=model,chunk_index=chunk_index,
                     chunks_total=total,result=local)

@@ -68,6 +68,10 @@ def build_parser() -> argparse.ArgumentParser:
     rm.add_argument('--chunk-chars',type=int,help='reduce source characters per model call (1000..13000)')
     rm.add_argument('--progress',action='store_true',help='show private-text-free chunk progress on stderr')
     rm.add_argument('--restart',action='store_true',help="clear all partial checkpoints for this conversation and model, then remap")
+    rm.add_argument('--split-on-json-error',action='store_true',
+                    help='opt in to extra paid model calls: split ONLY malformed-JSON research fragments')
+    rm.add_argument('--split-fragment',type=int,action='append',default=[],metavar='N',
+                    help='directly split an already-known failing fragment N (1-based); avoid retrying full-size fragment')
     rstatus=rs.add_parser('map-progress',help='inspect resumable chunk checkpoints without API calls')
     rstatus.add_argument('conversation_id')
     rstatus.add_argument('--chunk-chars',type=int)
@@ -414,6 +418,8 @@ def execute(args: argparse.Namespace):
                 return rm.map_conversation(st,args.conversation_id,mode=args.mode,model=model(),
                    api_base=api_base(),timeout=map_timeout,target_space_id=args.space,
                    progress=args.progress,restart=args.restart,
+                   split_on_invalid_json=args.split_on_json_error,
+                   force_split_fragments=tuple(args.split_fragment),
                    chunk_chars=(args.chunk_chars if args.chunk_chars is not None
                                 else settings['research_chunk_chars']))
             if args.action=='map-progress':

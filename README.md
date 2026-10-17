@@ -1,7 +1,8 @@
-# VKF v0.3.1 — Contextual Research Space & Timeout Recovery
+# VKF v0.3.2 — Research JSON Diagnostics & Bounded Split Recovery
 
 **核心变化：由“从对话中生成更多平级卡片”，转向“先恢复研究整体，再审视局部观点的角色、证据、相容性及未解决问题”。**
 
+- **v0.3.2 非法 JSON 恢复：** `research map --split-fragment N` 可仅将已经失败的特定分块拆细处理，保留其它成功检查点；`--split-on-json-error` 可以在显式同意额外费用时自动执行一次非递归细分。错误输出增加匿名的响应形态与 token 预算诊断。见 [RESEARCH_JSON_RECOVERY_GUIDE.md](RESEARCH_JSON_RECOVERY_GUIDE.md)。
 - **v0.3.1 稳定性升级：** 研究映射默认 300 秒、验证后逐块存储检查点、重新运行时断点恢复。新数据库 Schema v8；详细见 [TIMEOUT_RECOVERY_GUIDE.md](TIMEOUT_RECOVERY_GUIDE.md)。
 - **系统要求：** Python ≥3.10、SQLite 支持 STRICT / JSON / FTS5。运行时只有 Python 标准库；可选 Obsidian 和外部 Chat Completions API。
 - **重要：** 正式版本的架构文档、生命周期、CLI 和回归测试见本包。`v0.3.0` 是可运行的研究空间原型，**不是**已经证实具有数学层性质、可靠科学综合或完成人类理解测量的系统。

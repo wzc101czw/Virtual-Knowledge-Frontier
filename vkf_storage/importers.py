@@ -16,6 +16,7 @@ from typing import Any
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 import time
+import uuid
 
 from .core import Storage, InvalidInput, NotFound, Conflict, VKFError, _digest, _id
 
@@ -578,6 +579,53 @@ class ModelInvalidJSON(VKFError):
     """The provider accepted our request but its assistant text is not JSON."""
 
 
+def _invalid_json_shape(answer: str) -> str:
+    """Describe only the first meaningful character/class; never expose user text."""
+    text = answer.lstrip('\ufeff \t\r\n')
+    if not text:
+        return 'empty'
+    if text.startswith('{'):
+        return 'object_prefix'
+    if text.startswith('['):
+        return 'array_prefix'
+    if text.startswith('```'):
+        return 'markdown_fence'
+    if text.startswith('<think') or text.startswith('<analysis'):
+        return 'reasoning_tag'
+    if text.startswith('<'):
+        return 'markup_prefix'
+    if text.startswith('#'):
+        return 'markdown_heading'
+    return 'prose_or_other'
+
+
+def _capture_invalid_json(answer: str, task: str) -> str:
+    """Explicit opt-in: keep the assistant reply in an owner-only LOCAL file.
+
+    Never save the input conversation, HTTP authorization, or full API response.
+    The output itself may contain private content; users must protect the folder.
+    """
+    location = os.environ.get('VKF_CHAT_DEBUG_DIR', '').strip()
+    if not location:
+        return 'disabled'
+    try:
+        folder = Path(location)
+        if not folder.is_absolute() or not folder.is_dir():
+            return 'invalid_directory'
+        name = 'vkf-invalid-json-' + uuid.uuid4().hex + '.json'
+        target = folder / name
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        if hasattr(os, 'O_NOFOLLOW'):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(target, flags, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            json.dump({'task': task, 'assistant_content': answer},
+                      stream, ensure_ascii=False)
+        return name  # no directory, no content, no user identifiers
+    except (OSError, ValueError):
+        return 'write_failed'
+
+
 # Optional: strict Structured Outputs for providers that truly support the
 # Chat Completions JSON Schema parameter. JSON object mode remains default.
 _MODEL_SCHEMAS = {
@@ -857,9 +905,16 @@ def _request_once(system: str, text: str, model: str, api_base: str, timeout: in
     try:
         value = json.loads(cleaned)
     except json.JSONDecodeError as exc:
+        shape = _invalid_json_shape(answer)
+        debug_file = _capture_invalid_json(answer, task)
+        budget_note = ('provider_reported_completion_over_budget' if
+                       isinstance(output_tokens, int) and output_tokens > max_tokens else 'within_or_unknown_budget')
         raise ModelInvalidJSON(f'model output stage: message.content is not valid JSON '
-                       f'(length={len(answer)}, json_error={exc.msg}, line={exc.lineno}, column={exc.colno}, 'f'{completion_meta}; {meta}); '
-                       'use structured JSON mode if supported, or inspect provider format') from exc
+                       f'(length={len(answer)}, json_error={exc.msg}, line={exc.lineno}, column={exc.colno}, '
+                       f'content_shape={shape}, requested_json_mode={json_mode}, '
+                       f'usage_check={budget_note}, debug_capture={debug_file}, '
+                       f'{completion_meta}; {meta}); '
+                       'use json_schema if your provider supports it, or inspect an explicitly captured local reply') from exc
     if not isinstance(value, dict):
         raise VKFError(f'model output stage: expected JSON object, got {type(value).__name__} '
                        f'({completion_meta}; {meta})')
@@ -888,7 +943,7 @@ def request_model_json(system: str, text: str, model: str, api_base: str, timeou
                                  max_tokens=max_tokens, task=task)
         except ModelInvalidJSON as exc:
             if attempt >= json_retries:
-                raise VKFError(f'{exc}; json_attempts={attempt + 1}') from exc
+                raise ModelInvalidJSON(f'{exc}; json_attempts={attempt + 1}') from exc
     raise AssertionError('unreachable')
 
 

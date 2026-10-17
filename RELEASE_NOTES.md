@@ -1,3 +1,17 @@
+# v0.3.2 — JSON Diagnostics & Targeted Fragment Recovery
+
+- 诊断 `HTTP 200` 但 Assistant `message.content` 不合法 JSON 的情形：在错误中给出 `content_shape`、请求的 JSON Mode 和服务商报告的 token 用量是否高于请求预算；默认不存储私人模型回复。
+- 可选 `VKF_CHAT_DEBUG_DIR` 显式保存失败的 Assistant 回复到指定本机目录（不含输入 Prompt、API Key；可能包含私人认知资料，请勿分享未脱敏内容）。
+- 新增 `research map --split-fragment N`：直接将已知失败的单个分块细分后重试，不重做成功的完整分块；`--split-on-json-error` 为遇到不合法 JSON 时的显式、单层自动拆分选项。
+- 成功子分块利用现有 SQLite Schema v8 检查点持久化，下一次运行自动恢复；原文消息 ID、绝对字符范围不变，跨子分块结果经过完整原文证据校验。
+- 模型请求严格以原有分块 Prompt 进行，保持 v0.3.1 旧成功检查点可复用；改用不同 JSON Mode/Token 配置仍会导致按签名失效，这是安全设计。
+- 所有额外请求均需要用户显式开启功能；保持 v0.3.1 的网络超时不自动重发、严格解析、人工审核原则。
+- **数据库 Schema 不变（v8）；不是完整的真实模型兼容性验证。**
+
+详见 [RESEARCH_JSON_RECOVERY_GUIDE.md](RESEARCH_JSON_RECOVERY_GUIDE.md)。
+
+---
+
 # v0.3.1 — Resumable Research Mapping + Timeout Diagnostics
 
 - 将研究映射任务的超时独立配置为 `research_timeout`（默认 300 秒），可用 `config set research-timeout` 持久修改或 `research map --timeout` 单次覆盖；不改变普通提炼的 60 秒默认值。
