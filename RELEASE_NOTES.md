@@ -1,3 +1,9 @@
+# v0.3.0 发布说明
+
+新增受层论启发的研究空间、情境/局部观点、多来源综合与 Frontiers，并以研究员对粒度与结构的评价为首要验收标准；数据库迁移至 Schema v7。完整内容见 [RELEASE_NOTES_V030.md](RELEASE_NOTES_V030.md)。
+
+---
+
 ## v0.2.4 — Model API resilience & lifecycle operations
 
 - SQLite Schema v6：加入有来源信息的 `lifecycle_events` 和 Obsidian 托管文件归档清单 `lifecycle_retired_files`；原 v5 数据库迁移前自动备份。

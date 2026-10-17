@@ -1,3 +1,48 @@
+# VKF v0.3.0 — Contextual Research Space & Cognitive Synthesis
+
+**核心变化：由“从对话中生成更多平级卡片”，转向“先恢复研究整体，再审视局部观点的角色、证据、相容性及未解决问题”。**
+
+- **系统要求：** Python ≥3.10、SQLite 支持 STRICT / JSON / FTS5。运行时只有 Python 标准库；可选 Obsidian 和外部 Chat Completions API。
+- **重要：** 正式版本的架构文档、生命周期、CLI 和回归测试见本包。`v0.3.0` 是可运行的研究空间原型，**不是**已经证实具有数学层性质、可靠科学综合或完成人类理解测量的系统。
+- **关键验收：** 人类研究员实际判断整体/局部结构是否过碎、过粗、遗漏了哪类技术问题，并提供 1–5 分的真实性能评价，**不把 AI 自评当作成绩**。
+
+## v0.3.0 快速开始（Windows PowerShell）
+
+```powershell
+$DB = "D:\VKFData\vkf.db"   # 替换为实际数据库路径
+python -m vkf_storage --db $DB init   # 从 v6 升级时创建自动 pre-v7 备份
+python -m vkf_storage --db $DB doctor
+python -m vkf_storage --db $DB config show
+
+# 选择一场你自己熟悉的对话；先看看可能的历史研究空间
+python -m vkf_storage --db $DB research suggest-spaces CONV_ID
+# 生成待审核的整体研究地图（会调用 API，请确认自己的模型配置和费用）
+python -m vkf_storage --db $DB research map CONV_ID --mode llm
+python -m vkf_storage --db $DB research map-list
+
+# 把结果导出为 JSON，研究员审阅并手动调整主构想、Sub-idea 和缺失问题
+python -m vkf_storage --db $DB research map-export RMAP_ID "D:\VKFData\research-plan.json"
+# 填写人类评价，而不是交给模型打分
+python -m vkf_storage --db $DB research feedback RMAP_ID too_fragmented --note "子想法被切散了" --missing "动作 Token 表征"
+python -m vkf_storage --db $DB research feedback-summary
+
+# 如编辑了 JSON，再用 research revise RMAP_ID FILE --expected-revision 1
+# 最后才能人工审阅确认研究空间（不会自动批准正式 Knowledge/Understanding）
+python -m vkf_storage --db $DB research review-plan RMAP_ID
+python -m vkf_storage --db $DB research review-apply RMAP_ID --confirm TOKEN --expected-revision 1 --reason "人工审核"
+python -m vkf_storage --db $DB bridge export
+```
+
+Obsidian 将新增 `VKF/02 - Research Spaces.md` 与 `Research Overview.base`。一个正式研究空间对应一份可浏览的整体视图，生成笔记不会覆盖未同步的人工修改。原有 v0.2.4 Candidate / Consolidation 工作流仍可继续使用，但**不会自动转移到 Research Space 中**。
+
+**补充命令：** 对已有研究空间的局部讨论添加新观点时，指定 `--space SPACE_ID`，原有整体研究问题保持不变。只有 `research overview-update SPACE_ID --title ... --question ... --expected-revision N --reason ...` 可以明确修改总体目标；`research context-link` 允许同一个 Context 属于多个 Space。外部研究资料用 `research reference-add` 注册为未核验引用，并用 `research reference-link` 附到专门的 Reference View。
+
+**操作文档：** [V030_MIGRATION_GUIDE.md](V030_MIGRATION_GUIDE.md) · [HUMAN_EVALUATION_GUIDE.md](HUMAN_EVALUATION_GUIDE.md) · [RELEASE_NOTES_V030.md](RELEASE_NOTES_V030.md)
+
+---
+
+## 保留的 v0.2.4 功能与操作参考
+
 # VKF v0.2.4 — Resilient Model Gateway + Data Lifecycle
 
 本地知识边界引擎：SQLite 保管正式认知与事务，Obsidian Vault 为可读/可编辑的 Markdown 投影，模型用于提炼和比较，**不会自动将建议认定为用户理解或直接合并正式知识**。

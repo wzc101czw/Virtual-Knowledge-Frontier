@@ -193,7 +193,7 @@ class LifecycleTests(unittest.TestCase):
         finally:
             connection.close()
         response=Storage.initialize(db)
-        self.assertEqual(response['schema_version'],6)
+        self.assertEqual(response['schema_version'],7)
         self.assertTrue(Path(response['pre_migration_backup']).is_file())
         with Storage(db) as migrated:
             self.assertEqual(migrated.get_conversation('conv_old')['title'],'保留历史')

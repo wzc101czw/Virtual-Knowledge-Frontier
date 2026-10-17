@@ -34,6 +34,16 @@ def _targets(st: Storage, scope: str, conversation_id: str | None) -> dict[str, 
         raise InvalidInput(f"{scope} requires --conversation-id")
     if conversation_id:
         st.get_conversation(conversation_id)
+        if scope == 'conversation':
+            if st.db.execute('SELECT 1 FROM research_maps WHERE conversation_id=? LIMIT 1',
+                             (conversation_id,)).fetchone():
+                raise Conflict('conversation has research map proposals/review history; '
+                               'use derived reset before deleting its source')
+            if st.db.execute('''SELECT 1 FROM view_evidence_spans es JOIN messages m
+                ON m.id=es.message_id WHERE m.conversation_id=? LIMIT 1''',
+                (conversation_id,)).fetchone():
+                raise Conflict('conversation supplies an accepted Research Space evidence span; '
+                               'do not delete its provenance without resetting derived cognition')
 
     if scope in ("derived", "all"):
         candidates = _rows(st, "SELECT id FROM candidates ORDER BY id")
@@ -104,17 +114,27 @@ def _targets(st: Storage, scope: str, conversation_id: str | None) -> dict[str, 
     else:
         topics = []
 
+    research_spaces = (_rows(st, 'SELECT id FROM research_spaces ORDER BY id')
+                       if scope in ('derived','all') else [])
+    research_maps = (_rows(st, 'SELECT id FROM research_maps ORDER BY id')
+                     if scope in ('derived','all') else [])
+    research_feedback = (_rows(st, 'SELECT id FROM researcher_feedback ORDER BY id')
+                         if scope in ('derived','all') else [])
     target = dict(candidates=candidates, objects=objects, extraction_runs=runs,
                   messages=messages, conversations=conversations, model_calls=calls,
                   consolidation_reviews=reviews, candidate_links=links,
-                  candidate_equivalences=equiv, topics=topics)
+                  candidate_equivalences=equiv, topics=topics,
+                  research_spaces=research_spaces, research_maps=research_maps,
+                  researcher_feedback=research_feedback)
     # Fingerprint affected content as well as IDs: a stale preview must not
     # authorize purging a note someone has edited in the meantime.
     digest = hashlib.sha256()
     for name, table in [('candidates','candidates'),('objects','cognitive_objects'),
                         ('conversations','conversations'),('messages','messages'),
                         ('consolidation_reviews','consolidation_reviews'),
-                        ('extraction_runs','extraction_runs')]:
+                        ('extraction_runs','extraction_runs'),
+                        ('research_spaces','research_spaces'),('research_maps','research_maps'),
+                        ('researcher_feedback','researcher_feedback')]:
         ids = target[name]
         for pos in range(0, len(ids), 400):
             batch = ids[pos:pos+400]
@@ -124,7 +144,7 @@ def _targets(st: Storage, scope: str, conversation_id: str | None) -> dict[str, 
                 digest.update(json.dumps(list(row), ensure_ascii=False, sort_keys=True).encode('utf-8'))
     signature = hashlib.sha256(json.dumps(
         {"scope": scope, "conversation_id": conversation_id, "targets": target,
-         "content_sha256": digest.hexdigest(), "schema": 6},
+         "content_sha256": digest.hexdigest(), "schema": 7},
         sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:20]
     return {"scope": scope, "conversation_id": conversation_id,
             "token": signature, "counts": {k: len(v) for k, v in target.items()},
@@ -160,6 +180,7 @@ def _retire(st: Storage, event: str, rows: list[tuple[str, str, str]]) -> None:
 
 def _read_retire_rows(st: Storage, target: dict) -> tuple[list[tuple[str,str,str]], list[tuple[str,str,str]]]:
     oidset = set(target['objects'])
+    research_idset = set(target['research_spaces'])
     cset = set(target['candidates'])
     rset = set(target['consolidation_reviews'])
     tset = set(target['topics'])
@@ -174,6 +195,10 @@ def _read_retire_rows(st: Storage, target: dict) -> tuple[list[tuple[str,str,str
     conversation_suffixes = {i[-10:] for i in conset}
     for r in st.db.execute('SELECT vault_key,relative_path,exported_sha256 FROM obsidian_readonly_state'):
         relative = r['relative_path']
+        if relative.startswith('VKF/Research Spaces/') and relative.endswith('.md'):
+            if relative.rsplit('/',1)[-1].removesuffix('.md') in research_idset:
+                readonly.append((r['vault_key'], relative, r['exported_sha256']))
+            continue
         if not (relative.endswith('.md') and '--' in relative):
             continue
         note_id_suffix = relative.rsplit('--', 1)[-1].removesuffix('.md')
@@ -233,6 +258,18 @@ def apply(st: Storage, scope: str, *, conversation_id: str | None = None,
         for key, rel, _ in readonly:
             st.db.execute('DELETE FROM obsidian_readonly_state WHERE vault_key=? AND relative_path=?', (key, rel))
 
+        # v0.3.0: research structures may refer to candidates, messages, and
+        # accepted research spaces; delete the dependency chain before the
+        # legacy derived records, only for an explicit FULL derived reset.
+        if scope in ('derived','all'):
+            for table in (
+                'researcher_feedback', 'research_maps', 'synthesis_members',
+                'synthesis_proposals', 'compatibility_assessments',
+                'frontier_obstructions', 'coverage_dimensions', 'view_evidence_spans',
+                'contextual_views', 'research_space_contexts', 'research_space_versions',
+                'research_contexts', 'research_spaces', 'research_references'
+            ):
+                st.db.execute(f'DELETE FROM {table}')
         # Referenced candidate links/reviews/equivalences must be removed before candidates.
         _delete_ids(st, 'candidate_links', 'id', target['candidate_links'])
         _delete_ids(st, 'candidate_equivalences', 'duplicate_candidate_id', target['candidate_equivalences'])

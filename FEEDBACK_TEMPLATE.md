@@ -1,3 +1,9 @@
+# v0.3.0 人类研究员质量反馈
+
+优先使用 `research feedback RMAP_ID too_fragmented|too_coarse|balanced|missing_important`，再通过 `--missing`、`--edits-file`、`--structure-score`、`--question-coverage-score`、`--provenance-score` 给出可追溯的结构性修改建议。执行 `research feedback-export FILE` 可供人类复审及选择性分享。完整步骤见 [HUMAN_EVALUATION_GUIDE.md](HUMAN_EVALUATION_GUIDE.md)。
+
+---
+
 # VKF v0.2.0 用户反馈
 
 ## 环境

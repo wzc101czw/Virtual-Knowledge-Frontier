@@ -17,7 +17,7 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 KINDS = {"knowledge", "idea", "understanding", "question", "cross_insight"}
 OBJECT_STATUSES = {"active", "challenged", "archived"}
 QUESTION_STATES = {"open", "exploring", "answered", "parked"}
@@ -34,7 +34,11 @@ TABLES_TO_EXPORT = (
     "object_sources", "relations", "question_states", "object_versions",
     "audit_events", "frontier_suggestions", "conversation_origins", "message_import_metadata", "obsidian_bridge_state", "obsidian_readonly_state",
     "extraction_segments", "candidate_attributions", "consolidation_reviews", "candidate_equivalences", "topics", "candidate_topics", "object_topics", "candidate_links",
-    "lifecycle_events", "lifecycle_retired_files")
+    "lifecycle_events", "lifecycle_retired_files",
+    "research_spaces", "research_space_versions", "research_maps", "research_contexts",
+    "research_space_contexts", "research_references", "contextual_views",
+    "view_evidence_spans", "coverage_dimensions", "compatibility_assessments",
+    "synthesis_proposals", "synthesis_members", "frontier_obstructions", "researcher_feedback")
 
 
 class VKFError(Exception):
@@ -121,6 +125,19 @@ class Storage:
             self.db.execute("PRAGMA foreign_keys=ON")
             self.db.execute("PRAGMA busy_timeout=10000")
             version = self.db.execute("PRAGMA user_version").fetchone()[0]
+            if version == 6:
+                for table in ("lifecycle_events", "candidates", "conversations", "messages"):
+                    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                        raise UnsupportedSchema(f"version 6 database lacks required table {table}")
+                if not pre_migration_backup and existing_version == 6:
+                    backup_path = Path(path_str).with_name(Path(path_str).name + '.pre-v7.' + uuid4().hex[:8] + '.db')
+                    fd = os.open(backup_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+                    os.close(fd)
+                    with closing(sqlite3.connect(backup_path)) as backup_db:
+                        db.backup(backup_db)
+                    pre_migration_backup = str(backup_path)
+                cls._apply_script(db, '007_research_spaces.sql')
+                version = 7
             if version != SCHEMA_VERSION:
                 raise UnsupportedSchema(
                     f"schema version {version} != {SCHEMA_VERSION}; run 'vkf init' to migrate (back up first)"
@@ -231,6 +248,19 @@ class Storage:
                     pre_migration_backup = str(backup_path)
                 cls._apply_script(db, '006_lifecycle.sql')
                 version = 6
+            if version == 6:
+                for table in ("lifecycle_events", "candidates", "conversations", "messages"):
+                    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                        raise UnsupportedSchema(f"version 6 database lacks required table {table}")
+                if not pre_migration_backup and existing_version == 6:
+                    backup_path = Path(path_str).with_name(Path(path_str).name + '.pre-v7.' + uuid4().hex[:8] + '.db')
+                    fd = os.open(backup_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+                    os.close(fd)
+                    with closing(sqlite3.connect(backup_path)) as backup_db:
+                        db.backup(backup_db)
+                    pre_migration_backup = str(backup_path)
+                cls._apply_script(db, '007_research_spaces.sql')
+                version = 7
             if version != SCHEMA_VERSION:
                 raise UnsupportedSchema(f"schema version {version} is unsupported; expected {SCHEMA_VERSION}")
             db.execute("PRAGMA journal_mode=WAL") if not memory else None
@@ -967,6 +997,27 @@ class Storage:
            ON c.id=s.candidate_id WHERE c.state='approved'
            GROUP BY c.id HAVING COUNT(s.message_id)=0"""):
             problems.append(f"approved candidate lacks origins: {row[0]}")
+        # Research-level invariants beyond FK constraints.
+        for row in self.db.execute('''SELECT v.id FROM contextual_views v
+            LEFT JOIN research_space_contexts sc ON sc.space_id=v.space_id AND sc.context_id=v.context_id
+            WHERE sc.space_id IS NULL'''):
+            problems.append(f'research view context not in space: {row[0]}')
+        for row in self.db.execute('''SELECT v.id FROM contextual_views v
+            LEFT JOIN contextual_views p ON p.id=v.parent_view_id
+            WHERE v.parent_view_id IS NOT NULL AND (p.space_id IS NULL OR p.space_id<>v.space_id)'''):
+            problems.append(f'research view parent outside space: {row[0]}')
+        for row in self.db.execute('''SELECT v.id FROM contextual_views v
+            LEFT JOIN view_evidence_spans es ON es.view_id=v.id
+            GROUP BY v.id HAVING COUNT(es.message_id)=0'''):
+            problems.append(f'research view lacks source evidence: {row[0]}')
+        for row in self.db.execute('''SELECT s.id FROM research_spaces s
+            LEFT JOIN research_space_versions v ON v.space_id=s.id AND v.revision=s.revision
+            WHERE v.space_id IS NULL'''):
+            problems.append(f'research space lacks current snapshot: {row[0]}')
+        for row in self.db.execute('''SELECT m.id FROM research_maps m
+            WHERE (m.status='applied' AND m.reviewed_space_id IS NULL)
+               OR (m.status='pending' AND m.reviewed_space_id IS NOT NULL)'''):
+            problems.append(f'research map has inconsistent review state: {row[0]}')
         return {"ok": not problems, "integrity": integrity,
                 "foreign_key_violations": len(fk), "problems": problems}
 

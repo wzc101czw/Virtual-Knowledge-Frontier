@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--api-base")
     probe.add_argument("--timeout", type=int)
     probe.add_argument("--max-tokens", type=int, default=2048)
-    probe.add_argument("--task", choices=["basic", "compare", "extract"], default="basic",
+    probe.add_argument("--task", choices=["basic", "compare", "extract", "research"], default="basic",
                        help="compare uses the real comparison prompt on synthetic examples")
     cf = sub.add_parser("config", help="persist vault and model settings per database (no API secrets)")
     cfsub = cf.add_subparsers(dest="action",required=True)
@@ -57,6 +57,66 @@ def build_parser() -> argparse.ArgumentParser:
     lv.add_argument('--vault', type=Path)
     lv.add_argument('--apply', action='store_true')
     lv.add_argument('--confirm', help='token returned by lifecycle vault-prune preview')
+    # Research Space v0.3: human-reviewed whole-first maps + contextual synthesis.
+    research = sub.add_parser('research',help='v0.3 research spaces and human granularity review')
+    rs = research.add_subparsers(dest='action',required=True)
+    rm = rs.add_parser('map',help='propose research structure; never auto-commit')
+    rm.add_argument('conversation_id')
+    rm.add_argument('--mode',choices=['heuristic','llm'],default='heuristic')
+    rm.add_argument('--space',help='existing research space to update')
+    rm.add_argument('--model');rm.add_argument('--api-base');rm.add_argument('--timeout',type=int)
+    ri=rs.add_parser('import-map',help='import a manually authored plan JSON for review')
+    ri.add_argument('conversation_id');ri.add_argument('file',type=Path)
+    ri.add_argument('--space')
+    rrev=rs.add_parser('revise',help='edit a pending map from a local JSON file')
+    rrev.add_argument('id');rrev.add_argument('file',type=Path);rrev.add_argument('--expected-revision',required=True,type=int)
+    rg=rs.add_parser('suggest-spaces',help='suggest existing spaces before mapping (never auto merge)')
+    rg.add_argument('conversation_id');rg.add_argument('--limit',type=int,default=8)
+    rlist=rs.add_parser('map-list');rlist.add_argument('--status',default='pending',choices=['pending','applied','rejected','all'])
+    rshow=rs.add_parser('map-show');rshow.add_argument('id')
+    re=rs.add_parser('map-export',help='export the editable plan JSON without metadata')
+    re.add_argument('id');re.add_argument('file',type=Path)
+    rs.add_parser('list',help='list accepted research spaces')
+    rshow=rs.add_parser('show');rshow.add_argument('id')
+    ro=rs.add_parser('overview-update',help='explicitly revise top-level research question')
+    ro.add_argument('space_id');ro.add_argument('--title',required=True)
+    ro.add_argument('--question',required=True);ro.add_argument('--goal',default='')
+    ro.add_argument('--expected-revision',required=True,type=int);ro.add_argument('--reason',required=True)
+    rlink=rs.add_parser('context-link',help='allow one context to belong to multiple spaces')
+    rlink.add_argument('space_id');rlink.add_argument('context_id')
+    rlink.add_argument('--expected-revision',required=True,type=int);rlink.add_argument('--reason',required=True)
+
+    rplan=rs.add_parser('review-plan');rplan.add_argument('id')
+    rapply=rs.add_parser('review-apply');rapply.add_argument('id')
+    rapply.add_argument('--confirm',required=True)
+    rapply.add_argument('--expected-revision',type=int,required=True)
+    rapply.add_argument('--reason',required=True)
+    rrej=rs.add_parser('review-reject');rrej.add_argument('id');rrej.add_argument('--reason',required=True)
+    ra=rs.add_parser('assess');ra.add_argument('space_id');ra.add_argument('--mode',choices=['heuristic','llm'],default='heuristic')
+    ra.add_argument('--model');ra.add_argument('--api-base');ra.add_argument('--timeout',type=int)
+    ra.add_argument('--limit',type=int,default=10)
+    rss=rs.add_parser('synthesize');rss.add_argument('space_id');rss.add_argument('--mode',choices=['heuristic','llm'],default='heuristic')
+    rss.add_argument('--model');rss.add_argument('--api-base');rss.add_argument('--timeout',type=int)
+    rmss=rs.add_parser('synthesis-import');rmss.add_argument('space_id');rmss.add_argument('file',type=Path)
+    rfr=rs.add_parser('frontier');rfr.add_argument('space_id')
+    rd=rs.add_parser('decide');rd.add_argument('kind',choices=['assessment','synthesis','frontier'])
+    rd.add_argument('id');rd.add_argument('action',choices=['accept','reject']);rd.add_argument('--reason',required=True)
+    fb=rs.add_parser('feedback',help='human granularity assessment (no LLM grading)')
+    fb.add_argument('map_id');fb.add_argument('rating',choices=['too_fragmented','balanced','too_coarse','missing_important'])
+    fb.add_argument('--note',default='');fb.add_argument('--missing',action='append',default=[])
+    fb.add_argument('--edits-file',type=Path,help='JSON array of grouping/splitting/correction actions')
+    fb.add_argument('--structure-score',type=int,help='human 1..5: research hierarchy fidelity')
+    fb.add_argument('--question-coverage-score',type=int,help='human 1..5: important question coverage')
+    fb.add_argument('--provenance-score',type=int,help='human 1..5: source attribution fidelity')
+    rs.add_parser('feedback-summary')
+    fe=rs.add_parser('feedback-export',help='opt-in human feedback JSON, no entire conversations')
+    fe.add_argument('file',type=Path)
+    rr=rs.add_parser('reference-add',help='register literature/model reference without verifying its claims')
+    rr.add_argument('--title',required=True);rr.add_argument('--identifier',default='')
+    rr.add_argument('--type',choices=['paper','model','dataset','report','other'],default='other')
+    rs.add_parser('reference-list')
+    rr=rs.add_parser('reference-link');rr.add_argument('view_id');rr.add_argument('reference_id')
+
     cc = sub.add_parser("consolidate", help="compare incoming candidates with existing cognition")
     csub = cc.add_subparsers(dest="action", required=True)
     c = csub.add_parser("run", help="create non-destructive comparison proposals")
@@ -274,6 +334,21 @@ def execute(args: argparse.Namespace):
                 raise InvalidInput('comparison probe: missing rationale')
             return {'ok': True, 'task': 'compare', 'decision': result['decision'],
                     'model': model(), 'note': 'Synthetic comparison only; no VKF knowledge sent.'}
+        if args.task == 'research':
+            from .research_mapping import MAPPING_PROMPT
+            from .importers import request_model_json
+            result=request_model_json(MAPPING_PROMPT,
+                'Evidence segment IDs: s0=user, turn 0, chars 0..40; '
+                's1=assistant, turn 1, chars 0..34.\n'
+                '[segment s0] user: 我在探索具身智能预训练中的动作表征问题。\n'
+                '[segment s1] assistant: 一个待验证建议是研究潜在动作与反事实推断。',
+                model(),api_base(),timeout(),max_tokens=args.max_tokens,task='research_fragment')
+            if not isinstance(result.get('contexts'),list) or not result['contexts'] \
+                    or not isinstance(result.get('views'),list) or not result['views']:
+                raise InvalidInput('research probe: no contexts/views returned')
+            return {'ok':True,'task':'research','contexts':len(result['contexts']),
+                    'views':len(result['views']),
+                    'note':'Synthetic research text only; no private VKF conversation is sent.'}
         if args.task == 'extract':
             from .importers import _SYSTEM, _llm_suggestions
             # Synthetic text uses the real extraction prompt and returns counts,
@@ -324,6 +399,66 @@ def execute(args: argparse.Namespace):
                 return pull_vault(st, vault(), apply=args.apply)
             if args.action == "status":
                 return bridge_status(st, vault())
+        if cmd == 'research':
+            from . import research as rs
+            from . import research_mapping as rm
+            from . import research_synthesis as sy
+            if args.action=='map':
+                return rm.map_conversation(st,args.conversation_id,mode=args.mode,model=model(),
+                   api_base=api_base(),timeout=timeout(),target_space_id=args.space)
+            if args.action=='import-map':
+                plan=json.loads(args.file.read_text(encoding='utf-8'))
+                return rs.save_map(st,args.conversation_id,plan,mode='manual',target_space_id=args.space)
+            if args.action=='revise':
+                return rs.revise_map(st,args.id,json.loads(args.file.read_text(encoding='utf-8')),
+                                    expected_revision=args.expected_revision)
+            if args.action=='suggest-spaces':return rs.recommend_spaces(st,args.conversation_id,limit=args.limit)
+            if args.action=='map-list':return rs.list_maps(st,status=args.status)
+            if args.action=='map-show':return rs.get_map(st,args.id)
+            if args.action=='map-export':
+                draft=rs.get_map(st,args.id)['plan']
+                args.file.parent.mkdir(parents=True,exist_ok=True)
+                with args.file.open('x',encoding='utf-8',newline='\n') as f:
+                    json.dump(draft,f,ensure_ascii=False,indent=2)
+                return {'file':str(args.file),'map_id':args.id,'note':'Edit this file and run research revise.'}
+
+            if args.action=='list':return rs.list_spaces(st)
+            if args.action=='show':return rs.get_space(st,args.id)
+            if args.action=='overview-update':
+                return rs.update_space_overview(st,args.space_id,title=args.title,
+                    central_question=args.question,goal=args.goal,
+                    expected_revision=args.expected_revision,reason=args.reason)
+            if args.action=='context-link':
+                return rs.link_context_to_space(st,args.space_id,args.context_id,
+                    expected_revision=args.expected_revision,reason=args.reason)
+
+            if args.action=='review-plan':return rs.review_plan(st,args.id)
+            if args.action=='review-apply':
+                return rs.apply_map(st,args.id,token=args.confirm,
+                    expected_revision=args.expected_revision,reason=args.reason)
+            if args.action=='review-reject':return rs.reject_map(st,args.id,args.reason)
+            if args.action=='assess':return sy.assess(st,args.space_id,mode=args.mode,model=model(),
+                                                     api_base=api_base(),timeout=timeout(),limit=args.limit)
+            if args.action=='synthesize':return sy.synthesize(st,args.space_id,mode=args.mode,model=model(),
+                                                              api_base=api_base(),timeout=timeout())
+            if args.action=='synthesis-import':
+                return sy.create_synthesis(st,args.space_id,json.loads(args.file.read_text(encoding='utf-8')))
+            if args.action=='frontier':return sy.frontier(st,args.space_id)
+            if args.action=='decide':return sy.decide(st,args.kind,args.id,args.action,args.reason)
+            if args.action=='feedback':
+                edits=json.loads(args.edits_file.read_text(encoding='utf-8')) if args.edits_file else []
+                return rs.add_feedback(st,args.map_id,args.rating,note=args.note,
+                                       missing=args.missing,edits=edits,
+                                       structure_score=args.structure_score,
+                                       question_coverage_score=args.question_coverage_score,
+                                       provenance_score=args.provenance_score)
+            if args.action=='feedback-summary':return rs.feedback_summary(st)
+            if args.action=='feedback-export':return rs.export_feedback(st,args.file)
+            if args.action=='reference-add':
+                return rs.add_research_reference(st,args.title,identifier=args.identifier,source_type=args.type)
+            if args.action=='reference-list':return rs.list_research_references(st)
+            if args.action=='reference-link':return rs.attach_research_reference(st,args.view_id,args.reference_id)
+
         if cmd == 'lifecycle':
             from .lifecycle import plan, apply, vault_prune
             if args.action == 'plan':

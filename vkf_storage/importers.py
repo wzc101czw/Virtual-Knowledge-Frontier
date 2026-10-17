@@ -604,6 +604,50 @@ _MODEL_SCHEMAS = {
 }
 
 
+# Strict structured outputs for the v0.3 research proposal stages. Providers
+# lacking these schemas can use the standard json_object mode instead.
+def _schema_object(properties):
+    return {'type': 'object', 'additionalProperties': False,
+            'properties': properties, 'required': list(properties)}
+
+def _schema_arr(item):
+    return {'type':'array','items':item}
+
+_STR={'type':'string'}
+_NULLSTR={'type':['string','null']}
+_SARR=_schema_arr(_STR)
+_MODEL_SCHEMAS['research_fragment'] = _schema_object({
+ 'title':_STR,'central_question':_STR,'goal':_STR,
+ 'contexts':_schema_arr(_schema_object({'key':_STR,'title':_STR,'focus':_STR,
+     'assumptions':_SARR})),
+ 'views':_schema_arr(_schema_object({
+     'key':_STR,'context_key':_STR,
+     'kind':{'type':'string','enum':['knowledge','idea','understanding','question','cross_insight','reference']},
+     'role':{'type':'string','enum':['reference','core_idea','sub_idea','alternative_route',
+       'mechanism','analogy','assumption','technical_question','experiment','limitation','observation','evidence']},
+     'statement':_STR,
+     'attribution':{'type':'string','enum':['user','assistant','mixed','external','unknown']},
+     'epistemic_status':{'type':'string','enum':['hypothesis','reported','supported','disputed','unknown']},
+     'parent_key':_NULLSTR,'evidence_segment_ids':_SARR})),
+ 'coverage_dimensions':_schema_arr(_schema_object({'label':_STR,
+     'status':{'type':'string','enum':['addressed','open','unknown']},'note':_STR}))
+})
+_MODEL_SCHEMAS['research_global'] = _schema_object({
+ 'title':_STR,'central_question':_STR,'goal':_STR,
+ 'groups':_schema_arr(_schema_object({'title':_STR,'focus':_STR,'member_keys':_SARR}))
+})
+_MODEL_SCHEMAS['research_assessment'] = _schema_object({
+ 'verdict':{'type':'string','enum':['compatible','incompatible','needs_mapping','underdetermined','unknown']},
+ 'mappings':_SARR,
+ 'checks':_schema_object({'terminology':_STR,'assumptions':_STR,'objectives':_STR,'evidence':_STR}),
+ 'rationale':_STR
+})
+_MODEL_SCHEMAS['research_synthesis'] = _schema_object({
+ 'title':_STR,'mechanism':_STR,'member_view_ids':_SARR,
+ 'assumptions':_SARR,'limitations':_SARR,'validation':_STR
+})
+
+
 def _retry_count(name: str, default: int, upper: int) -> int:
     value = os.environ.get(name, str(default))
     try:
@@ -701,7 +745,7 @@ def _request_once(system: str, text: str, model: str, api_base: str, timeout: in
     elif json_mode == 'json_schema':
         schema = _MODEL_SCHEMAS.get(task)
         if schema is None:
-            raise InvalidInput('strict JSON schema requires task=extraction, comparison or probe')
+            raise InvalidInput('strict JSON schema is unavailable for this request task')
         request_data['response_format'] = {
             'type': 'json_schema',
             'json_schema': {'name': 'vkf_' + task, 'strict': True, 'schema': schema}}

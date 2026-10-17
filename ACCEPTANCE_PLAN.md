@@ -1,3 +1,13 @@
+# v0.3.0 首要验收：研究员视角的结构与提炼粒度
+
+**工程自动测试不能替代研究员评价。** 对每个待审 `research map`，由人类研究员独立给出 `too_fragmented`、`too_coarse`、`balanced` 或 `missing_important`，记录遗漏技术问题，并给结构/问题/来源三个 1–5 分。详见 [HUMAN_EVALUATION_GUIDE.md](HUMAN_EVALUATION_GUIDE.md)。
+
+验收目标：100% 长文本输入覆盖；黄金研究案例关键内容召回 100%（人工标注）；人工 Balanced 比例在样本扩大后 ≥80%；结构和技术问题覆盖均 ≥4/5；零未经审核的正式 Understanding。需比较同一 Map 修订前后评价变化，避免只看自动生成数量。
+
+---
+
+# 历史 v0.2.x 验收计划（兼容性参考）
+
 # VKF v0.2.4 · 关键验收指标补充
 
 ## 必须达成的工程门槛（不应只看 502 是否偶尔消失）

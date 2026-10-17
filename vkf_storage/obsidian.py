@@ -312,6 +312,7 @@ views:
              "- [[VKF/Open Questions.base|Open Questions]]",
              "- [[VKF/Candidate Inbox.base|Candidate Inbox]]",
              "- [[VKF/01 - Consolidation|Consolidation & Topics]]",
+             "- [[VKF/02 - Research Spaces|Research Spaces & Human Review]]",
              "", "## Pending Candidate Inbox", ""]
     for title, rel in candidate_links:
         lines.append(f"- [[{rel[:-3]}|{title.replace('|','-')}]]")
@@ -381,6 +382,8 @@ def export_vault(st: Storage, vault: str | Path, *, include_conversations: bool 
                                          include_candidates=include_candidates)
     from .obsidian_reviews import export_consolidation_views
     report['consolidation'] = export_consolidation_views(st,root,key,paths)
+    from .research_projection import export_research
+    report['research'] = export_research(st,root,key)
     return report
 
 
