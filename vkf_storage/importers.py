@@ -492,13 +492,14 @@ def _offline_suggestions(messages: list[dict[str, Any]]) -> list[dict[str, Any]]
     return found
 
 
-def _full_chunks(messages: list[dict[str, Any]]) -> list[tuple[int, int, str, list[tuple[str,int,int]]]]:
+def _full_chunks(messages: list[dict[str, Any]], budget: int = MAX_LLM_CHARS) -> list[tuple[int, int, str, list[tuple[str,int,int]]]]:
     """Lossless, character-offset tracked chunking: every source character covered once.
 
     Chunk budget includes role/turn headers. A long message is split into parts and
     has an independent extraction run per part (never silently truncated).
     """
-    budget = MAX_LLM_CHARS
+    if type(budget) is not int or not 1000 <= budget <= MAX_LLM_CHARS:
+        raise InvalidInput(f'chunk character budget must be between 1000 and {MAX_LLM_CHARS}')
     result: list[tuple[int,int,str,list[tuple[str,int,int]]]] = []
     parts: list[str] = []
     segments: list[tuple[str,int,int]] = []
@@ -761,8 +762,11 @@ def _request_once(system: str, text: str, model: str, api_base: str, timeout: in
     status = None
     http_retries = _retry_count('VKF_CHAT_HTTP_RETRIES', 1, 3)
     for attempt in range(http_retries + 1):
+        stage = 'connect_or_headers'
+        started = time.monotonic()
         try:
             with urlopen(req, timeout=timeout) as resp:
+                stage = 'response_body'
                 raw = resp.read(2_000_001)
                 headers = getattr(resp, 'headers', None)
                 status = getattr(resp, 'status', None)
@@ -790,10 +794,16 @@ def _request_once(system: str, text: str, model: str, api_base: str, timeout: in
             raise VKFError(f'HTTP stage: status={exc.code};{info}; request_id={rid}; '
                            f'attempts={attempt + 1}; check provider availability and request parameters') from exc
         except (URLError, TimeoutError, OSError) as exc:
-            # Transport timeouts may already have been processed/billed upstream;
-            # don't silently issue an additional request.
-            raise VKFError(f'transport stage: {type(exc).__name__}; '
-                           'check endpoint, TLS/network and configured timeout') from exc
+            # A request may have completed and been billed upstream. Do not
+            # automatically resubmit an uncertain HTTP transport outcome.
+            elapsed = round(time.monotonic() - started, 1)
+            reason = getattr(exc, 'reason', None)
+            timeout_like = isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError)
+            failure = 'TimeoutError' if timeout_like else type(exc).__name__
+            raise VKFError(f'transport stage: {failure}; phase={stage}, task={task}, '
+                           f'timeout_seconds={timeout}, elapsed_seconds={elapsed}, '
+                           f'attempt={attempt + 1}; no automatic transport retry; '
+                           'for research map increase research-timeout and rerun to reuse saved chunks') from exc
 
     ctype = headers.get('content-type', 'unknown') if headers else 'unknown'
     rid = headers.get('x-request-id', 'unknown') if headers else 'unknown'

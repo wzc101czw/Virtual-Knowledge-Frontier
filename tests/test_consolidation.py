@@ -70,12 +70,12 @@ class ConsolidationTests(unittest.TestCase):
                       'synthesis_proposals','compatibility_assessments',
                       'frontier_obstructions','coverage_dimensions','view_evidence_spans',
                       'contextual_views','research_space_contexts','research_space_versions',
-                      'research_contexts','research_spaces','research_references'):
+                      'research_contexts','research_spaces','research_references','research_map_checkpoints'):
             db.execute('DROP TABLE '+table)
         db.execute('PRAGMA user_version=3')
         db.commit();db.close()
         result=Storage.initialize(self.path)
-        self.assertEqual(result['schema_version'],7)
+        self.assertEqual(result['schema_version'],8)
         backup=Path(result['pre_migration_backup'])
         self.assertTrue(backup.is_file())
         with sqlite3.connect(backup) as connection:

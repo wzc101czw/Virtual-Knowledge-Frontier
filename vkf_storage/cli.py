@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     cfsub = cf.add_subparsers(dest="action",required=True)
     cfsub.add_parser("show")
     cs = cfsub.add_parser("set")
-    cs.add_argument("key", choices=["vault", "model", "api-base", "timeout", "extract", "compare"])
+    cs.add_argument("key", choices=["vault", "model", "api-base", "timeout", "research-timeout", "research-chunk-chars", "extract", "compare"])
     cs.add_argument("value")
     lc = sub.add_parser('lifecycle', help='preview and safely purge incorrect VKF history')
     lsub = lc.add_subparsers(dest='action', required=True)
@@ -65,6 +65,12 @@ def build_parser() -> argparse.ArgumentParser:
     rm.add_argument('--mode',choices=['heuristic','llm'],default='heuristic')
     rm.add_argument('--space',help='existing research space to update')
     rm.add_argument('--model');rm.add_argument('--api-base');rm.add_argument('--timeout',type=int)
+    rm.add_argument('--chunk-chars',type=int,help='reduce source characters per model call (1000..13000)')
+    rm.add_argument('--progress',action='store_true',help='show private-text-free chunk progress on stderr')
+    rm.add_argument('--restart',action='store_true',help="clear all partial checkpoints for this conversation and model, then remap")
+    rstatus=rs.add_parser('map-progress',help='inspect resumable chunk checkpoints without API calls')
+    rstatus.add_argument('conversation_id')
+    rstatus.add_argument('--chunk-chars',type=int)
     ri=rs.add_parser('import-map',help='import a manually authored plan JSON for review')
     ri.add_argument('conversation_id');ri.add_argument('file',type=Path)
     ri.add_argument('--space')
@@ -404,8 +410,16 @@ def execute(args: argparse.Namespace):
             from . import research_mapping as rm
             from . import research_synthesis as sy
             if args.action=='map':
+                map_timeout = args.timeout if args.timeout is not None else settings['research_timeout']
                 return rm.map_conversation(st,args.conversation_id,mode=args.mode,model=model(),
-                   api_base=api_base(),timeout=timeout(),target_space_id=args.space)
+                   api_base=api_base(),timeout=map_timeout,target_space_id=args.space,
+                   progress=args.progress,restart=args.restart,
+                   chunk_chars=(args.chunk_chars if args.chunk_chars is not None
+                                else settings['research_chunk_chars']))
+            if args.action=='map-progress':
+                return rm.checkpoint_progress(st,args.conversation_id,model=model(),api_base=api_base(),
+                    chunk_chars=(args.chunk_chars if args.chunk_chars is not None
+                                 else settings['research_chunk_chars']))
             if args.action=='import-map':
                 plan=json.loads(args.file.read_text(encoding='utf-8'))
                 return rs.save_map(st,args.conversation_id,plan,mode='manual',target_space_id=args.space)

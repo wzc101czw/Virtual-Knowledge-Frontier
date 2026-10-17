@@ -1,3 +1,19 @@
+# v0.3.1 — Resumable Research Mapping + Timeout Diagnostics
+
+- 将研究映射任务的超时独立配置为 `research_timeout`（默认 300 秒），可用 `config set research-timeout` 持久修改或 `research map --timeout` 单次覆盖；不改变普通提炼的 60 秒默认值。
+- 增加可配置的研究分块长度 `research_chunk_chars`（默认 13000 字符，可降低为 6500 等）以缓解服务商固定请求时限下的单次模型负载。
+- 在 SQLite Schema v8 加入每分块、完整证据校验后的研究地图检查点；失败重试时根据完整请求签名安全复用成功的分块及必要的全局汇总，完成后自动清理。
+- 错误报告增加 Connect/Header 与 Response Body 阶段、超时秒数、耗时，以及 Research Map 失败片段序号；不输出原始模型文本或 API Key。
+- 新增 `research map-progress` 和 `research map --progress / --restart`，用于可见性与安全回退。
+- 保留网络超时默认不自动重试，避免服务端已计费请求被静默重复调用。
+- 调整生命周期删除逻辑，预览、备份与清理均覆盖未完成的 Research Map 检查点。
+- 改正 `Storage.__init__` 中旧 Schema 检测时错误尝试迁移而引用不存在的局部变量的问题：迁移必须通过显式 `init` 完成。
+- 没有修改原有认知数据模型与人工审核语义；仍需真实服务端性能和人类研究员的认知质量测试。
+
+详见 [TIMEOUT_RECOVERY_GUIDE.md](TIMEOUT_RECOVERY_GUIDE.md)。
+
+---
+
 # v0.3.0 发布说明
 
 新增受层论启发的研究空间、情境/局部观点、多来源综合与 Frontiers，并以研究员对粒度与结构的评价为首要验收标准；数据库迁移至 Schema v7。完整内容见 [RELEASE_NOTES_V030.md](RELEASE_NOTES_V030.md)。

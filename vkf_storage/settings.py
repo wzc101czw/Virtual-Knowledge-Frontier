@@ -10,7 +10,7 @@ from .core import InvalidInput, Conflict
 
 DEFAULTS = {
     "vault": "", "model": "", "api_base": "https://api.openai.com/v1",
-    "timeout": 60, "extract": "heuristic", "compare": "heuristic",
+    "timeout": 60, "research_timeout": 300, "research_chunk_chars": 13000, "extract": "heuristic", "compare": "heuristic",
 }
 
 
@@ -24,7 +24,7 @@ def _setting_path(db_path: str | Path) -> Path:
 def _validate(key: str, value: object):
     if key not in DEFAULTS:
         raise InvalidInput("unknown setting: " + str(key) + "; API keys must stay in VKF_API_KEY environment variable")
-    if not isinstance(value, str) and key != "timeout":
+    if not isinstance(value, str) and key not in {"timeout", "research_timeout", "research_chunk_chars"}:
         raise InvalidInput(f"{key} must be text")
     if key == "vault":
         if not value or not Path(value).expanduser().is_dir():
@@ -40,13 +40,21 @@ def _validate(key: str, value: object):
         if not p.netloc or p.username or p.password or p.query or p.fragment or any(c.isspace() for c in value):
             raise InvalidInput("invalid or unsafe API URL")
         value = value.rstrip("/")
-    elif key == "timeout":
+    elif key == "research_chunk_chars":
         try:
             value = int(value)
-        except (ValueError, TypeError):
-            raise InvalidInput("timeout must be an integer between 5 and 600")
-        if not 5 <= value <= 600:
-            raise InvalidInput("timeout must be an integer between 5 and 600")
+        except (ValueError, TypeError) as exc:
+            raise InvalidInput('research_chunk_chars must be between 1000 and 13000') from exc
+        if not 1000 <= value <= 13000:
+            raise InvalidInput('research_chunk_chars must be between 1000 and 13000')
+    elif key in {"timeout", "research_timeout"}:
+        bound = 1200 if key == "research_timeout" else 600
+        try:
+            value = int(value)
+        except (ValueError, TypeError) as exc:
+            raise InvalidInput(f"{key} must be an integer between 5 and {bound}") from exc
+        if not 5 <= value <= bound:
+            raise InvalidInput(f"{key} must be an integer between 5 and {bound}")
     elif key == "extract":
         if value not in {"none", "heuristic", "llm"}:
             raise InvalidInput("extract must be none|heuristic|llm")

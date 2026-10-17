@@ -17,7 +17,7 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 KINDS = {"knowledge", "idea", "understanding", "question", "cross_insight"}
 OBJECT_STATUSES = {"active", "challenged", "archived"}
 QUESTION_STATES = {"open", "exploring", "answered", "parked"}
@@ -38,7 +38,7 @@ TABLES_TO_EXPORT = (
     "research_spaces", "research_space_versions", "research_maps", "research_contexts",
     "research_space_contexts", "research_references", "contextual_views",
     "view_evidence_spans", "coverage_dimensions", "compatibility_assessments",
-    "synthesis_proposals", "synthesis_members", "frontier_obstructions", "researcher_feedback")
+    "synthesis_proposals", "synthesis_members", "frontier_obstructions", "researcher_feedback", "research_map_checkpoints")
 
 
 class VKFError(Exception):
@@ -125,19 +125,6 @@ class Storage:
             self.db.execute("PRAGMA foreign_keys=ON")
             self.db.execute("PRAGMA busy_timeout=10000")
             version = self.db.execute("PRAGMA user_version").fetchone()[0]
-            if version == 6:
-                for table in ("lifecycle_events", "candidates", "conversations", "messages"):
-                    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
-                        raise UnsupportedSchema(f"version 6 database lacks required table {table}")
-                if not pre_migration_backup and existing_version == 6:
-                    backup_path = Path(path_str).with_name(Path(path_str).name + '.pre-v7.' + uuid4().hex[:8] + '.db')
-                    fd = os.open(backup_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
-                    os.close(fd)
-                    with closing(sqlite3.connect(backup_path)) as backup_db:
-                        db.backup(backup_db)
-                    pre_migration_backup = str(backup_path)
-                cls._apply_script(db, '007_research_spaces.sql')
-                version = 7
             if version != SCHEMA_VERSION:
                 raise UnsupportedSchema(
                     f"schema version {version} != {SCHEMA_VERSION}; run 'vkf init' to migrate (back up first)"
@@ -261,6 +248,19 @@ class Storage:
                     pre_migration_backup = str(backup_path)
                 cls._apply_script(db, '007_research_spaces.sql')
                 version = 7
+            if version == 7:
+                for table in ('research_maps', 'conversations', 'researcher_feedback'):
+                    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                        raise UnsupportedSchema(f'version 7 database lacks required table {table}')
+                if not pre_migration_backup and existing_version == 7:
+                    backup_path = Path(path_str).with_name(Path(path_str).name + '.pre-v8.' + uuid4().hex[:8] + '.db')
+                    fd = os.open(backup_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+                    os.close(fd)
+                    with closing(sqlite3.connect(backup_path)) as backup_db:
+                        db.backup(backup_db)
+                    pre_migration_backup = str(backup_path)
+                cls._apply_script(db, '008_research_checkpoints.sql')
+                version = 8
             if version != SCHEMA_VERSION:
                 raise UnsupportedSchema(f"schema version {version} is unsupported; expected {SCHEMA_VERSION}")
             db.execute("PRAGMA journal_mode=WAL") if not memory else None

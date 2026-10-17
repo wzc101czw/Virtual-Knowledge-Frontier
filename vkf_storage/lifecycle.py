@@ -118,6 +118,11 @@ def _targets(st: Storage, scope: str, conversation_id: str | None) -> dict[str, 
                        if scope in ('derived','all') else [])
     research_maps = (_rows(st, 'SELECT id FROM research_maps ORDER BY id')
                      if scope in ('derived','all') else [])
+    research_checkpoints = (
+        _rows(st, 'SELECT key FROM research_map_checkpoints ORDER BY key')
+        if scope in ('derived','all') else
+        (_rows(st, 'SELECT key FROM research_map_checkpoints WHERE conversation_id=? ORDER BY key',
+                (conversation_id,)) if scope == 'conversation' else []))
     research_feedback = (_rows(st, 'SELECT id FROM researcher_feedback ORDER BY id')
                          if scope in ('derived','all') else [])
     target = dict(candidates=candidates, objects=objects, extraction_runs=runs,
@@ -125,6 +130,7 @@ def _targets(st: Storage, scope: str, conversation_id: str | None) -> dict[str, 
                   consolidation_reviews=reviews, candidate_links=links,
                   candidate_equivalences=equiv, topics=topics,
                   research_spaces=research_spaces, research_maps=research_maps,
+                  research_map_checkpoints=research_checkpoints,
                   researcher_feedback=research_feedback)
     # Fingerprint affected content as well as IDs: a stale preview must not
     # authorize purging a note someone has edited in the meantime.
@@ -134,17 +140,19 @@ def _targets(st: Storage, scope: str, conversation_id: str | None) -> dict[str, 
                         ('consolidation_reviews','consolidation_reviews'),
                         ('extraction_runs','extraction_runs'),
                         ('research_spaces','research_spaces'),('research_maps','research_maps'),
-                        ('researcher_feedback','researcher_feedback')]:
+                        ('researcher_feedback','researcher_feedback'),
+                        ('research_map_checkpoints','research_map_checkpoints')]:
         ids = target[name]
+        primary_key = 'key' if name == 'research_map_checkpoints' else 'id'
         for pos in range(0, len(ids), 400):
             batch = ids[pos:pos+400]
             placeholders = ','.join('?' for _ in batch)
-            for row in st.db.execute(f"SELECT * FROM {table} WHERE id IN ({placeholders}) ORDER BY id", batch):
+            for row in st.db.execute(f"SELECT * FROM {table} WHERE {primary_key} IN ({placeholders}) ORDER BY {primary_key}", batch):
                 # Use a canonical encoding; nothing from the texts enters preview.
                 digest.update(json.dumps(list(row), ensure_ascii=False, sort_keys=True).encode('utf-8'))
     signature = hashlib.sha256(json.dumps(
         {"scope": scope, "conversation_id": conversation_id, "targets": target,
-         "content_sha256": digest.hexdigest(), "schema": 7},
+         "content_sha256": digest.hexdigest(), "schema": 8},
         sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:20]
     return {"scope": scope, "conversation_id": conversation_id,
             "token": signature, "counts": {k: len(v) for k, v in target.items()},
@@ -258,6 +266,8 @@ def apply(st: Storage, scope: str, *, conversation_id: str | None = None,
         for key, rel, _ in readonly:
             st.db.execute('DELETE FROM obsidian_readonly_state WHERE vault_key=? AND relative_path=?', (key, rel))
 
+        # Transient partial research maps are separately backed up and purged.
+        _delete_ids(st, 'research_map_checkpoints', 'key', target['research_map_checkpoints'])
         # v0.3.0: research structures may refer to candidates, messages, and
         # accepted research spaces; delete the dependency chain before the
         # legacy derived records, only for an explicit FULL derived reset.

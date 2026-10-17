@@ -64,8 +64,8 @@ class ResearchSpaceTests(unittest.TestCase):
         p=review_plan(self.st,proposal['id'])
         return apply_map(self.st,proposal['id'],token=p['token'],expected_revision=p['revision'],reason='研究员确认结构')
 
-    def test_research_schema7_and_backup_existing_v6(self):
-        self.assertEqual(self.st.db.execute('PRAGMA user_version').fetchone()[0],7)
+    def test_research_schema8_and_backup_existing_v6(self):
+        self.assertEqual(self.st.db.execute('PRAGMA user_version').fetchone()[0],8)
         self.assertTrue(self.st.doctor()['ok'])
         legacy=Path(self.folder.name)/'old-v6.db'
         with sqlite3.connect(legacy) as c:
@@ -75,7 +75,7 @@ class ResearchSpaceTests(unittest.TestCase):
             c.execute("INSERT INTO conversations(id,source,title) VALUES('keep','other','保留')")
             c.commit()
         result=Storage.initialize(legacy)
-        self.assertEqual(result['schema_version'],7)
+        self.assertEqual(result['schema_version'],8)
         self.assertTrue(Path(result['pre_migration_backup']).is_file())
         with sqlite3.connect(result['pre_migration_backup']) as backup:
             self.assertEqual(backup.execute('PRAGMA user_version').fetchone()[0],6)

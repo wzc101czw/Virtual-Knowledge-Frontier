@@ -1,7 +1,8 @@
-# VKF v0.3.0 — Contextual Research Space & Cognitive Synthesis
+# VKF v0.3.1 — Contextual Research Space & Timeout Recovery
 
 **核心变化：由“从对话中生成更多平级卡片”，转向“先恢复研究整体，再审视局部观点的角色、证据、相容性及未解决问题”。**
 
+- **v0.3.1 稳定性升级：** 研究映射默认 300 秒、验证后逐块存储检查点、重新运行时断点恢复。新数据库 Schema v8；详细见 [TIMEOUT_RECOVERY_GUIDE.md](TIMEOUT_RECOVERY_GUIDE.md)。
 - **系统要求：** Python ≥3.10、SQLite 支持 STRICT / JSON / FTS5。运行时只有 Python 标准库；可选 Obsidian 和外部 Chat Completions API。
 - **重要：** 正式版本的架构文档、生命周期、CLI 和回归测试见本包。`v0.3.0` 是可运行的研究空间原型，**不是**已经证实具有数学层性质、可靠科学综合或完成人类理解测量的系统。
 - **关键验收：** 人类研究员实际判断整体/局部结构是否过碎、过粗、遗漏了哪类技术问题，并提供 1–5 分的真实性能评价，**不把 AI 自评当作成绩**。
@@ -10,14 +11,16 @@
 
 ```powershell
 $DB = "D:\VKFData\vkf.db"   # 替换为实际数据库路径
-python -m vkf_storage --db $DB init   # 从 v6 升级时创建自动 pre-v7 备份
+python -m vkf_storage --db $DB init   # v7->v8 创建 pre-v8 备份，较旧版本逐级迁移
 python -m vkf_storage --db $DB doctor
 python -m vkf_storage --db $DB config show
 
 # 选择一场你自己熟悉的对话；先看看可能的历史研究空间
 python -m vkf_storage --db $DB research suggest-spaces CONV_ID
 # 生成待审核的整体研究地图（会调用 API，请确认自己的模型配置和费用）
-python -m vkf_storage --db $DB research map CONV_ID --mode llm
+python -m vkf_storage --db $DB config set research-timeout 300
+python -m vkf_storage --db $DB research map CONV_ID --mode llm --progress
+# 如中断：research map-progress CONV_ID；再次运行将复用已完成的局部块
 python -m vkf_storage --db $DB research map-list
 
 # 把结果导出为 JSON，研究员审阅并手动调整主构想、Sub-idea 和缺失问题

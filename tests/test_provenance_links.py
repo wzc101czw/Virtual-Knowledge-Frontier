@@ -219,7 +219,7 @@ class ProvenanceLinksTests(unittest.TestCase):
         finally:
             conn.close()
         result=Storage.initialize(path)
-        self.assertEqual(result['schema_version'],7)
+        self.assertEqual(result['schema_version'],8)
         with sqlite3.connect(result['pre_migration_backup']) as db:
             self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],4)
         with Storage(path) as migrated:
