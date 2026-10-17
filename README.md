@@ -1,3 +1,11 @@
+# VKF v0.3.3 — Research Mapping Output Protocol Compatibility
+
+**v0.3.3** 修复 Chat Completions 兼容端点在 JSON Mode 下把推理标签写进 `message.content` 所触发的解析异常：仅跳过完整闭合的推理区段，绝不从内部推理中提取知识。如果没有合法的最终 JSON，仍报告明确错误而不会产生伪造的研究地图。
+
+新增 `VKF_CHAT_REASONING_EFFORT` 可选环境变量（仅在提供商支持时使用）；已有 Research Map 断点、Schema v8、人工审核和数据生命周期管理保持不变。详见 [REASONING_OUTPUT_RECOVERY_GUIDE.md](REASONING_OUTPUT_RECOVERY_GUIDE.md)。
+
+---
+
 # VKF v0.3.2 — Research JSON Diagnostics & Bounded Split Recovery
 
 **核心变化：由“从对话中生成更多平级卡片”，转向“先恢复研究整体，再审视局部观点的角色、证据、相容性及未解决问题”。**

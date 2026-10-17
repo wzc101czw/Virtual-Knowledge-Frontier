@@ -599,6 +599,74 @@ def _invalid_json_shape(answer: str) -> str:
     return 'prose_or_other'
 
 
+_REASONING_OPEN = re.compile(r'<(think|analysis)(?:\s+[^<>]{0,200})?\s*>', re.I)
+_FINAL_OPEN = re.compile(r'<(final|answer)\s*>', re.I)
+
+
+def _final_message_content(content: Any) -> Any:
+    """Do not concatenate explicitly separate reasoning parts with final text.
+
+    OpenAI-compatible providers sometimes use a list of content parts while
+    exposing chain-of-thought/reasoning as another part. Only the parts intended
+    as final answer are eligible to become cognitive research data.
+    """
+    if not isinstance(content, list):
+        return content
+    final = []
+    for part in content:
+        if isinstance(part, dict):
+            kind = part.get('type')
+            if isinstance(kind, str) and kind.casefold() in {
+                'reasoning', 'analysis', 'thinking', 'reasoning_text', 'reasoning_delta',
+                'thought', 'thoughts', 'thinking_text',
+            }:
+                continue
+        portion = _content(part)
+        if portion.strip():
+            final.append(portion)
+    return '\n'.join(final)
+
+
+def _final_json_text(answer: str) -> tuple[str, str, str]:
+    """Strip ONLY complete leading reasoning envelopes, not free-form prose.
+
+    Returned fields are (final_text, reasoning_status, final_shape).  Nothing
+    inside a reasoning envelope is interpreted as final, even if it contains
+    a valid JSON object.  An unclosed envelope is NOT recoverable by stripping.
+    """
+    text = answer.lstrip('\ufeff').strip()
+    removed = 0
+    status = 'absent'
+    for _ in range(8):
+        opening = _REASONING_OPEN.match(text)
+        if opening is None:
+            break
+        tag = opening.group(1)
+        ending = re.search(r'</' + tag + r'\s*>', text[opening.end():], re.I)
+        if ending is None:
+            return '', 'unclosed', 'empty'
+        text = text[opening.end() + ending.end():].strip()
+        removed += 1
+        status = 'closed'
+    if _REASONING_OPEN.match(text):
+        return '', 'too_many_prefixes', 'empty'
+    if removed and not text:
+        return '', 'closed_without_final', 'empty'
+    # Some compatible proxies add a short, explicit final-answer envelope.
+    final_open = _FINAL_OPEN.match(text)
+    if final_open:
+        close = re.search(r'</' + final_open.group(1) + r'\s*>\s*\Z', text, re.I)
+        if close:
+            text = text[final_open.end():close.start()].strip()
+    # Preserve existing Markdown-fence compatibility, but only unwrap an
+    # entire fenced output, never an arbitrary JSON-looking substring.
+    if text.startswith('```'):
+        fence = re.fullmatch(r'```(?:json)?[ \t]*\n?(.*?)\n?```', text, re.S | re.I)
+        if fence:
+            text = fence.group(1).strip()
+    return text, status, _invalid_json_shape(text)
+
+
 def _capture_invalid_json(answer: str, task: str) -> str:
     """Explicit opt-in: keep the assistant reply in an owner-only LOCAL file.
 
@@ -745,6 +813,7 @@ def _request_once(system: str, text: str, model: str, api_base: str, timeout: in
     VKF_CHAT_MAX_OUTPUT_TOKENS=4096
     VKF_CHAT_OMIT_TEMPERATURE=1
     VKF_CHAT_JSON_MODE=json_object  # default; json_schema for supported providers
+    VKF_CHAT_REASONING_EFFORT=low  # optional; provider must support the field
     VKF_CHAT_HTTP_RETRIES=1          # transient upstream HTTP failures only
     VKF_CHAT_JSON_RETRIES=1          # one bounded reprompt for malformed JSON
     """
@@ -781,6 +850,12 @@ def _request_once(system: str, text: str, model: str, api_base: str, timeout: in
     if json_mode not in {'none', 'json_object', 'json_schema'}:
         raise InvalidInput('VKF_CHAT_JSON_MODE must be none, json_object or json_schema')
 
+    # Chat Completions reasoning control is provider/model dependent.  It is
+    # strictly opt-in, never silently sent to an unknown compatible gateway.
+    reasoning_effort = os.environ.get('VKF_CHAT_REASONING_EFFORT', '').strip()
+    if reasoning_effort not in {'', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'}:
+        raise InvalidInput('VKF_CHAT_REASONING_EFFORT must be none|minimal|low|medium|high|xhigh|max')
+
     request_data: dict[str, Any] = {
         'model': model,
         'messages': [{'role': 'system', 'content': system},
@@ -789,6 +864,8 @@ def _request_once(system: str, text: str, model: str, api_base: str, timeout: in
     }
     if omit_temperature != '1':
         request_data['temperature'] = 0
+    if reasoning_effort:
+        request_data['reasoning_effort'] = reasoning_effort
     if json_mode == 'json_object':
         request_data['response_format'] = {'type': 'json_object'}
     elif json_mode == 'json_schema':
@@ -854,7 +931,7 @@ def _request_once(system: str, text: str, model: str, api_base: str, timeout: in
                            'for research map increase research-timeout and rerun to reuse saved chunks') from exc
 
     ctype = headers.get('content-type', 'unknown') if headers else 'unknown'
-    rid = headers.get('x-request-id', 'unknown') if headers else 'unknown'
+    rid = _safe_request_id(headers.get('x-request-id', 'unknown')) if headers else 'unknown'
     meta = f'status={status if status is not None else "unknown"}, content_type={ctype}, request_id={rid}'
     if len(raw) > 2_000_000:
         raise VKFError(f'HTTP response stage: body exceeds 2000000 bytes ({meta})')
@@ -882,9 +959,9 @@ def _request_once(system: str, text: str, model: str, api_base: str, timeout: in
     message = choice.get('message')
     if not isinstance(message, dict):
         raise VKFError(f'API schema stage: missing choices[0].message ({meta})')
-    answer = message.get('content')
-    if isinstance(answer, list):
-        answer = _content(answer)
+    answer = _final_message_content(message.get('content'))
+    separate_reasoning = any(isinstance(message.get(k), str) and bool(message[k])
+                             for k in ('reasoning_content', 'reasoning', 'thinking'))
     usage = data.get('usage') or {}
     output_tokens = (usage.get('completion_tokens') if isinstance(usage, dict) else None)
     details = usage.get('completion_tokens_details') if isinstance(usage, dict) else None
@@ -894,14 +971,13 @@ def _request_once(system: str, text: str, model: str, api_base: str, timeout: in
     if message.get('refusal'):
         raise VKFError(f'model output stage: refusal present ({completion_meta}; {meta})')
     if not isinstance(answer, str) or not answer.strip():
-        raise VKFError(f'model output stage: empty message.content ({completion_meta}; {meta}); '
-                       'possible output-budget exhaustion or provider-specific response schema')
+        raise VKFError(f'model output stage: empty message.content (final) '
+                       f'(separate_reasoning={str(separate_reasoning).lower()}; {completion_meta}; {meta}); '
+                       'possible reasoning-only response or provider-specific response schema')
     if finish_reason == 'length':
         raise VKFError(f'model output stage: incomplete completion (finish_reason=length; '
                        f'{completion_meta}; {meta}); increase output-token budget if supported')
-    cleaned = answer.strip()
-    if cleaned.startswith('```'):
-        cleaned = re.sub(r'^```(?:json)?\s*|\s*```$', '', cleaned).strip()
+    cleaned, reasoning_status, final_shape = _final_json_text(answer)
     try:
         value = json.loads(cleaned)
     except json.JSONDecodeError as exc:
@@ -911,10 +987,13 @@ def _request_once(system: str, text: str, model: str, api_base: str, timeout: in
                        isinstance(output_tokens, int) and output_tokens > max_tokens else 'within_or_unknown_budget')
         raise ModelInvalidJSON(f'model output stage: message.content is not valid JSON '
                        f'(length={len(answer)}, json_error={exc.msg}, line={exc.lineno}, column={exc.colno}, '
-                       f'content_shape={shape}, requested_json_mode={json_mode}, '
+                       f'content_shape={shape}, reasoning_prefix={reasoning_status}, '
+                       f'final_shape={final_shape}, separate_reasoning={str(separate_reasoning).lower()}, '
+                       f'requested_json_mode={json_mode}, '
                        f'usage_check={budget_note}, debug_capture={debug_file}, '
                        f'{completion_meta}; {meta}); '
-                       'use json_schema if your provider supports it, or inspect an explicitly captured local reply') from exc
+                       'a valid final JSON object is required; try json_schema if supported, '
+                       'otherwise inspect the locally captured final reply') from exc
     if not isinstance(value, dict):
         raise VKFError(f'model output stage: expected JSON object, got {type(value).__name__} '
                        f'({completion_meta}; {meta})')

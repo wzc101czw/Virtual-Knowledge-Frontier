@@ -1,3 +1,17 @@
+# v0.3.3 — Reasoning-channel-aware JSON Recovery
+
+- v0.3.2 的 `reasoning_tag` 故障：现在仅剥离完全闭合的前缀 `<think>` / `<analysis>`，且只解析其后的独立完整 JSON；不能把模型推理中的 JSON 视作最终内容。
+- 兼容独立 `reasoning_content` 和内容数组的显式推理段；只处理最终文本。
+- 更精确的隐私安全诊断：`reasoning_prefix`、`final_shape`、`separate_reasoning`。
+- 新增可选 `VKF_CHAT_REASONING_EFFORT=low`（以及其他官方枚举值），仅适用于支持该参数的兼容服务；未设置时绝不发送。
+- 默认输出配置下的 v0.3.2 Research Mapping 检查点哈希保持兼容；显式更换推理强度则产生新的配置指纹。
+- Schema 维持 v8；没有自动认知审批、没有数据库重建要求。
+- 支持研究员可控恢复、严格不从推理文字中提取候选。
+- 新增 16 个专用回归测试，附 [REASONING_OUTPUT_RECOVERY_GUIDE.md](REASONING_OUTPUT_RECOVERY_GUIDE.md)。
+- `gpt-6-astra` 兼容端点上的真实行为需由用户自行实测；不能把离线测试视为真实 API 验证。
+
+---
+
 # v0.3.2 — JSON Diagnostics & Targeted Fragment Recovery
 
 - 诊断 `HTTP 200` 但 Assistant `message.content` 不合法 JSON 的情形：在错误中给出 `content_shape`、请求的 JSON Mode 和服务商报告的 token 用量是否高于请求预算；默认不存储私人模型回复。

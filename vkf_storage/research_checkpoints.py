@@ -20,6 +20,10 @@ def key_for(*, conversation_id: str, stage: str, model: str, api_base: str,
     knobs = {name: os.environ.get(name, '') for name in (
         'VKF_CHAT_JSON_MODE', 'VKF_CHAT_TOKEN_FIELD', 'VKF_CHAT_OMIT_TEMPERATURE',
         'VKF_CHAT_MAX_OUTPUT_TOKENS')}
+    # Keep v0.3.2 cache keys identical when this new knob is not configured.
+    effort = os.environ.get('VKF_CHAT_REASONING_EFFORT', '')
+    if effort:
+        knobs['VKF_CHAT_REASONING_EFFORT'] = effort
     value = [conversation_id, stage, model, api_base.rstrip('/'),
              system, query, max_tokens, knobs]
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
